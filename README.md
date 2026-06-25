@@ -33,10 +33,10 @@ A little traffic light pops into your menu bar. It **auto-starts at login** and 
 | | State | What's up |
 |---|---|---|
 | ⚪ | gray | idle — nothing running |
-| 🟡 | amber | Claude is working / thinking |
-| ✨🟡 | **blinking amber** | **your turn** — a question or plan approval is waiting |
+| 🟠 | orange | Claude is working / thinking |
+| ✨🟠 | **blinking orange** | **your turn** — a question, a plan, or any approval prompt is waiting on you |
 | 🟢 | green | finished, all good |
-| 🔴 | red | finished on a bad note (a no-go verdict) |
+| 🔴 | red | finished on a bad note (a no-go verdict) — also plays a short error buzz 🔊 |
 
 Only the active lamp lights up — the others stay a calm gray. No tokens, no LLM calls, no network: it just reads a tiny state file the hooks write and redraws. 🪶
 
@@ -88,11 +88,12 @@ Removes the menu-bar app, the login agent, the hooks, and `Greenlight.app`.
 <summary>🤓 Nerdy notes & troubleshooting</summary>
 
 - **It launches as a plain process, not via the `.app`'s `exec`.** A bundle `exec python` launch leaves the macOS status item *invisible*; a plain process draws it. The LaunchAgent runs the script directly; the `.app` icon just kickstarts that agent.
-- **Permission prompts ("Allow this command?") don't blink** — they stay solid amber. Claude Code doesn't fire a `Notification` hook for them, and there's no way to tell "waiting on a permission prompt" from "a tool is running." `AskUserQuestion` / `ExitPlanMode` *do* blink.
+- **Approval prompts blink** — permission prompts ("Allow this command?"), `AskUserQuestion`, and `ExitPlanMode` all blink orange until you act. Claude Code doesn't fire a `Notification` hook for permission prompts, so the hook keys off `PreToolUse`: any tool that *isn't* already in your allow-list will pop a prompt, so it blinks; allow-listed (auto-approved) tools stay solid. It snaps back to solid the instant the tool runs after you approve (instant for quick tools; a genuinely long-running prompted tool keeps blinking until it finishes, since there's no "approval granted" hook to flip on).
 - **One light per machine** — it's shared across Claude Code sessions; concurrent sessions fight over the state. Fine for one active session.
 - **Icon missing?** Run `~/Library/Application\ Support/Greenlight/greenlight.sh start`, or re-run the installer.
 - **Light stopped updating?** Re-run the installer to repoint the hook (e.g. after upgrading Python).
-- **Files:** `greenlight_app.py` (the menu-bar app), `greenlight_hook.py` (writes state + reads verdicts), `greenlight.sh` (start/stop/restart/status), `install.sh` / `uninstall.sh`, `make_icon.py` + `build_icns.sh` (regenerate the icon).
+- **Files:** `greenlight_app.py` (the menu-bar app), `greenlight_hook.py` (writes state + reads verdicts), `greenlight.sh` (start/stop/restart/status), `install.sh` / `uninstall.sh`, `make_icon.py` + `build_icns.sh` (regenerate the icon), `buzz.wav` + `make_buzz.py` (the red error buzz).
+- **Change the red buzz** — override it in `config.json`: `{"error_sound": "/System/Library/Sounds/Basso.aiff"}` (absolute path or a bare `/System/Library/Sounds` name), or `""` to silence it. Regenerate the bundled buzz with `make_buzz.py`.
 - A backup of your pre-Greenlight settings is saved to `~/.claude/settings.json.bak.greenlight`.
 
 </details>
