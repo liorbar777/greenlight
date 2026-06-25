@@ -188,19 +188,14 @@ class GreenlightApp(NSObject):
                 NSMakeRect(cx - r, CY - r, 2 * r, 2 * r)).fill()
 
     def _draw_wix(self):
-        if self.wix is not None:
-            side = 2 * R - 2
-            self.wix.drawInRect_fromRect_operation_fraction_(
-                NSMakeRect(GREEN_CX - side / 2, CY - side / 2, side, side),
-                NSMakeRect(0, 0, 0, 0), 2, 1.0)         # 2 = NSCompositeSourceOver
+        # Only an actual logo asset is drawn — no placeholder glyph. Without
+        # wix_white.png the green lamp is just a clean glowing dot like the rest.
+        if self.wix is None:
             return
-        # placeholder bold white "W"
-        attrs = {NSFontAttributeName: NSFont.boldSystemFontOfSize_(9),
-                 NSForegroundColorAttributeName: NSColor.whiteColor()}
-        s = NSString.stringWithString_("W")
-        sz = s.sizeWithAttributes_(attrs)
-        s.drawAtPoint_withAttributes_(
-            NSMakePoint(GREEN_CX - sz.width / 2.0, CY - sz.height / 2.0), attrs)
+        side = 2 * R - 2
+        self.wix.drawInRect_fromRect_operation_fraction_(
+            NSMakeRect(GREEN_CX - side / 2, CY - side / 2, side, side),
+            NSMakeRect(0, 0, 0, 0), 2, 1.0)             # 2 = NSCompositeSourceOver
 
     def redraw(self):
         self.item.button().setImage_(self.make_image())
