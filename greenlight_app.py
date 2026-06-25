@@ -152,16 +152,18 @@ class Greenlight:
             self.bulb_ids.append(bulb)
 
         # Wix mark INSIDE the green bulb (drawn last so it stays on top) —
-        # image if supplied, else a bold white placeholder.
+        # image if supplied, else a bold white placeholder. Shown only while
+        # the light is green (see render()).
+        self.wix_id = None
         if os.path.exists(WIX_IMG):
             try:
                 self._wix_img = tk.PhotoImage(file=WIX_IMG)
-                c.create_image(GREEN_CX, CYC, image=self._wix_img)
+                self.wix_id = c.create_image(GREEN_CX, CYC, image=self._wix_img)
             except Exception:
                 self._wix_img = None
         if self._wix_img is None:
-            c.create_text(GREEN_CX, CYC + 1, text="Wix",
-                          font=("Helvetica", 8, "bold"), fill="#ffffff")
+            self.wix_id = c.create_text(GREEN_CX, CYC + 1, text="Wix",
+                                        font=("Helvetica", 8, "bold"), fill="#ffffff")
 
         # Power toggle button (arc ring + stem)
         bx, by, br = BTN_CX, CYC, BTN_R
@@ -202,6 +204,9 @@ class Greenlight:
         btn_color = BTN_ON if self.enabled else BTN_OFF
         c.itemconfig(self.btn_ring, outline=btn_color)
         c.itemconfig(self.btn_stem, fill=btn_color)
+        # Wix mark shows only when the light is actually green.
+        show_wix = self.enabled and self.state == "go"
+        c.itemconfig(self.wix_id, state="normal" if show_wix else "hidden")
 
     # ---- loops ----
     def poll(self):
