@@ -3,8 +3,8 @@
 # Cooperates with the LaunchAgent (com.liorbar.greenlight) when it's installed,
 # and falls back to a plain background process when it isn't.
 set -euo pipefail
-PY="/Users/liorbar/.local/share/uv/python/cpython-3.11.14-macos-aarch64-none/bin/python3.11"
 DIR="$HOME/Documents/all_projects/greenlight"
+PY="$DIR/.venv/bin/python"     # the menu-bar app needs PyObjC from the venv
 APP="$DIR/greenlight_app.py"
 LABEL="com.liorbar.greenlight"
 DOMAIN="gui/$(id -u)"

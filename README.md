@@ -1,30 +1,33 @@
-# 🚦 Greenlight — a traffic light for Claude Code
+# 🚦 Greenlight — a menu-bar traffic light for Claude Code
 
-A small, borderless, always-on-top window that docks at the top of your
-screen and shows Claude Code's state as a vertical traffic light.
-
-Standalone project — no dependencies beyond a Python with `tkinter`.
+A native macOS **menu-bar** item (`NSStatusItem`, via PyObjC) that sits beside
+your system icons and shows Claude Code's state as a mini horizontal 3-lamp
+traffic light. Click it for a menu (Enable/Disable, Quit).
 
 ## Install
 
 ```bash
 cd ~/Documents/all_projects/greenlight
-./install.sh        # wires Claude Code hooks + installs the login LaunchAgent
+./install.sh        # creates .venv + PyObjC, wires hooks, installs the login LaunchAgent
 ```
 
 Re-run any time (idempotent). To remove: `./uninstall.sh`.
-Uses `/Users/liorbar/.local/share/uv/.../python3.11` by default — override
-with `GREENLIGHT_PY=/path/to/python3 ./install.sh` (any python3 with tkinter).
+The venv is built with `/Users/liorbar/.local/share/uv/.../python3.11` by
+default — override with `GREENLIGHT_PY=/path/to/python3 ./install.sh`.
 
 ## States
 
-| Light | Meaning | Hook that triggers it |
-|-------|---------|-----------------------|
+| Lamp | Meaning | Hook that triggers it |
+|------|---------|-----------------------|
 | ⚫ all dim | idle / no active turn | `SessionStart` |
 | 🟡 solid amber | Claude is working / thinking | `UserPromptSubmit`, `PreToolUse`, `PostToolUse` |
 | 🟡 blinking amber | Claude is **waiting on you** (a question / plan approval) | `PreToolUse` (AskUserQuestion / ExitPlanMode) |
-| 🟢 green | finished OK, or a positive verdict | `Stop` |
+| 🟢 green (Wix mark shown) | finished OK, or a positive verdict | `Stop` |
 | 🔴 red | a negative go/no-go verdict | `Stop` |
+
+The **Wix mark** is drawn inside the green lamp only while the light is green.
+Supply `wix_white.png` (white logo, transparent bg) in this folder and it
+replaces the placeholder "W"; otherwise a bold white "W" is drawn.
 
 ## Getting a red / green verdict
 
@@ -46,53 +49,50 @@ unresolved error, or a flagged risk. Good turns emit nothing and stay
 green, so normal replies stay clean. You can still force a verdict any
 time by asking Claude to "end with a GREENLIGHT verdict".
 
+## Controls
+
+- **Click the menu-bar icon** → menu with **Enabled** (toggle; greys the light
+  out / "unplugs" it, persisted across restarts) and **Quit Greenlight**.
+- Manual control: `./greenlight.sh {start|stop|restart|status}`
+
 ## Files
 
 | File | Role |
 |------|------|
-| `greenlight_app.py` | the floating GUI (tkinter); polls `state.json` |
-| `greenlight_hook.py` | called by hooks; writes `state.json`, parses verdicts, auto-launches the GUI |
-| `greenlight.sh` | manual control: `start` / `stop` / `restart` / `status` |
-| `state.json` | current state (written by the hook) |
-| `pos.json` | remembered window position |
-| `app.pid` / `app.log` | GUI process id / log |
-
-## Controls
-
-- **Drag** the light to move it (position is remembered).
-- **Double-click** or **Esc** (while focused) to close it.
-- Manual control: `~/Documents/all_projects/greenlight/greenlight.sh {start|stop|restart|status}`
+| `greenlight_app.py` | the menu-bar app (PyObjC `NSStatusItem`); polls `state.json` |
+| `greenlight_hook.py` | called by Claude Code hooks; writes `state.json`, parses verdicts, ensures the app is running |
+| `greenlight.sh` | manual control: `start` / `stop` / `restart` / `status` (launchd-aware) |
+| `install.sh` / `uninstall.sh` | set up / tear down venv, hooks, LaunchAgent |
+| `requirements.txt` | `pyobjc-framework-Cocoa` |
+| `com.liorbar.greenlight.plist` | LaunchAgent template |
+| `.venv/` | virtualenv with PyObjC (gitignored; created by install) |
+| `state.json` | current state (written by the hook; gitignored) |
+| `config.json` | persisted enabled/disabled choice (gitignored) |
+| `app.pid` / `app.lock` / `app.log` | process id / single-instance lock / log (gitignored) |
 
 ## How it's wired
 
-Hooks in `~/.claude/settings.json` call `greenlight_hook.py` with an
-intent on each event. The hook writes `state.json` and, if the GUI isn't
-running, launches it detached. The GUI watches `state.json` and redraws.
+Hooks in `~/.claude/settings.json` call `greenlight_hook.py` with an intent on
+each event (run by the uv Python — it only writes `state.json`, no deps). The
+hook ensures the app is running (via `launchctl kickstart`, else a detached
+spawn with the venv Python). The menu-bar app polls `state.json` and redraws.
 
 A backup of the pre-Greenlight settings is at
 `~/.claude/settings.json.bak.greenlight`.
 
 ## Auto-start at login (LaunchAgent)
 
-A LaunchAgent at `~/Library/LaunchAgents/com.liorbar.greenlight.plist`
-starts the light at login and relaunches it if it crashes. A clean quit
-(double-click) exits 0 and is respected — it will NOT be relaunched until
-next login. `greenlight.sh` is launchd-aware: `stop` boots the job out
-(it returns next login), `restart` uses `kickstart -k`.
-
-- Disable until next login: `~/Documents/all_projects/greenlight/greenlight.sh stop`
-- Reload now: `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.liorbar.greenlight.plist`
+A LaunchAgent at `~/Library/LaunchAgents/com.liorbar.greenlight.plist` runs the
+app at login (with the venv Python) and relaunches it on crash. A clean Quit
+exits 0 and is respected — not relaunched until next login. `greenlight.sh` is
+launchd-aware: `stop` boots the job out (returns next login), `restart` uses
+`kickstart -k`.
 
 ## Removing it
 
-1. Unload + delete the LaunchAgent:
-   `launchctl bootout gui/$(id -u)/com.liorbar.greenlight 2>/dev/null;
-   rm ~/Library/LaunchAgents/com.liorbar.greenlight.plist`
-2. Delete the six Greenlight hook groups from `~/.claude/settings.json`
-   (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Notification,
-   Stop) — or restore the backup above. Also remove the
-   "Greenlight Verdict Marker" section from `~/.claude/CLAUDE.md`.
-3. `rm -rf ~/Documents/all_projects/greenlight`
+Run `./uninstall.sh` (removes the LaunchAgent + hook groups), then optionally
+`rm -rf ~/Documents/all_projects/greenlight` and delete the
+"Greenlight Verdict Marker" section from `~/.claude/CLAUDE.md`.
 
 ## Notes / limitations
 
@@ -103,19 +103,11 @@ next login. `greenlight.sh` is launchd-aware: `stop` boots the job out
   `AskUserQuestion` / `ExitPlanMode` (which ride `PreToolUse`) blink. There is
   no hook-based way to distinguish "waiting on a permission prompt" from "a tool
   is running", so solid amber is the honest signal for both.
-
-- One light is shared across all Claude Code sessions; concurrent
-  sessions will fight over the state. Fine for a single active session.
-- tkinter windows float above normal windows but not above true
-  full-screen-space apps (a macOS limitation).
-- **Interpreter path is hardcoded.** Both the hook commands in
-  `settings.json` and `greenlight.sh` point at
-  `/Users/liorbar/.local/share/uv/python/cpython-3.11.14-.../python3.11`.
-  If that uv Python is removed or upgraded, hooks silently no-op (Claude
-  keeps working, the light just stops updating). To repoint: edit the
-  `PY=` line in `greenlight.sh`, the `PY` constant in `greenlight_hook.py`,
-  and the six hook commands in `~/.claude/settings.json`. Any python3 with
-  tkinter works (e.g. `/usr/bin/python3`).
-- Single instance is enforced via `app.lock` (`flock`); duplicate launches
-  exit immediately. `Esc` to quit only works if the borderless window has
-  keyboard focus — **double-click** (or `greenlight.sh stop`) is reliable.
+- One light is shared across all Claude Code sessions; concurrent sessions will
+  fight over the state. Fine for a single active session.
+- **Interpreter paths are hardcoded** (uv Python for the hook commands; the
+  project `.venv` for the app). If the uv Python is removed/upgraded, the hooks
+  silently no-op (Claude keeps working, the light just stops updating). Re-run
+  `./install.sh` (optionally with `GREENLIGHT_PY=`) to repoint.
+- Single instance is enforced via `app.lock` (`flock`); duplicate launches exit
+  immediately.

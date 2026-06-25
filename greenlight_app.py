@@ -1,62 +1,55 @@
 #!/usr/bin/env python3
-"""Greenlight — a floating horizontal traffic light for Claude Code.
+"""Greenlight — a menu-bar traffic light for Claude Code.
 
-A borderless, always-on-top panel docked near the top of the screen (below
-the menu bar). It reflects Claude Code's state by reading a small JSON state
-file that the hook (greenlight_hook.py) writes:
+A native macOS status-bar item (NSStatusItem) that sits beside the system
+icons. It draws a mini horizontal 3-lamp traffic light reflecting Claude
+Code's state, read from a small JSON file the hook writes:
 
-    idle     -> all bulbs dim
+    idle     -> all lamps dim
     working  -> solid amber
-    waiting  -> blinking amber (Claude is waiting on you)
-    go       -> green   (finished OK / positive verdict)
+    waiting  -> blinking amber (Claude asked you something)
+    go       -> green   (finished OK / positive verdict; Wix mark shown)
     nogo     -> red     (negative verdict)
 
-Layout (left -> right):  [ red  amber  green(Wix inside) ] [ power toggle ]
+Click the icon for a menu: Enable/Disable (greys it out, persisted) and Quit.
 
-The power toggle "unplugs" the light: it greys everything out (like a disabled
-IDE control) and stops reacting to Claude until you click it again. This
-enabled/disabled choice is remembered across restarts.
-
-Drag the panel (away from the button) to move it; position is remembered.
-Double-click or Esc to quit.
+Needs PyObjC (pyobjc-framework-Cocoa); run with the project's .venv python.
 """
 import fcntl
 import json
 import os
 import sys
-import tkinter as tk
+
+import objc
+from AppKit import (
+    NSApplication, NSApplicationActivationPolicyAccessory, NSStatusBar,
+    NSVariableStatusItemLength, NSImage, NSColor, NSBezierPath, NSMenu,
+    NSMenuItem, NSFont, NSFontAttributeName, NSForegroundColorAttributeName,
+)
+from Foundation import (
+    NSObject, NSTimer, NSMakeRect, NSMakeSize, NSMakePoint, NSString,
+)
 
 HOME = os.path.expanduser("~")
 BASE_DIR = os.path.join(HOME, "Documents", "all_projects", "greenlight")
 STATE_FILE = os.path.join(BASE_DIR, "state.json")
-POS_FILE = os.path.join(BASE_DIR, "pos.json")
+CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 PID_FILE = os.path.join(BASE_DIR, "app.pid")
 LOCK_FILE = os.path.join(BASE_DIR, "app.lock")
-WIX_IMG = os.path.join(BASE_DIR, "wix_white.png")   # white logo, if supplied
+WIX_IMG = os.path.join(BASE_DIR, "wix_white.png")
 
-# Geometry (horizontal)
-W, H = 170, 58
-PAD = 6
-CYC = H // 2                       # vertical center for everything
-R = 12                             # bulb radius
-BULB_CX = [30, 66, 102]            # red, amber, green centers (left -> right)
-GREEN_CX = BULB_CX[2]              # the Wix mark lives inside the green bulb
-BTN_CX, BTN_R = 146, 11            # power-button center x / radius
+# Icon geometry (points)
+IW, IH = 46, 18
+R = 6
+CY = IH / 2.0
+CX = [11, 23, 35]          # red, amber, green centres
+GREEN_CX = CX[2]
 
-# Colors
-HOUSING = "#161618"
-HOUSING_EDGE = "#3a3a3c"
-BG = "#0b0b0c"
-DISABLED_BULB = "#3a3a3d"          # flat grey when "unplugged"
-DISABLED_EDGE = "#27272a"
-BTN_ON = "#e6e6e6"
-BTN_OFF = "#5a5a5e"
-
-BULB = {
-    "red":   {"on": "#ff453a", "off": "#3a1512", "glow": "#7a241c"},
-    "amber": {"on": "#ffb340", "off": "#3a2c10", "glow": "#7a5410"},
-    "green": {"on": "#32d74b", "off": "#103a18", "glow": "#1c6e2c"},
-}
+BULB_ON = {"red": (1.00, 0.27, 0.23), "amber": (1.00, 0.70, 0.25),
+           "green": (0.20, 0.84, 0.29)}
+BULB_OFF = {"red": (0.34, 0.13, 0.11), "amber": (0.34, 0.25, 0.10),
+            "green": (0.09, 0.27, 0.14)}
+DISABLED = (0.42, 0.42, 0.44)
 
 STATE_MAP = {
     "idle":    {"bulb": None,    "blink": False},
@@ -76,212 +69,130 @@ def read_json(path, default):
         return default
 
 
-def rounded_rect(canvas, x1, y1, x2, y2, r, **kw):
-    pts = [
-        x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r,
-        x2, y2 - r, x2, y2, x2 - r, y2, x1 + r, y2,
-        x1, y2, x1, y2 - r, x1, y1 + r, x1, y1,
-    ]
-    return canvas.create_polygon(pts, smooth=True, **kw)
+def nscolor(rgb):
+    return NSColor.colorWithCalibratedRed_green_blue_alpha_(rgb[0], rgb[1], rgb[2], 1.0)
 
 
-class Greenlight:
-    def __init__(self, root):
-        self.root = root
+class GreenlightApp(NSObject):
+    def init(self):
+        self = objc.super(GreenlightApp, self).init()
+        if self is None:
+            return None
         self.state = "idle"
-        self.enabled = True
+        self.enabled = bool(read_json(CONFIG_FILE, {}).get("enabled", True))
         self.blink_on = True
-        self._mtime = 0
-        self._drag = (0, 0)
-        self._press_on_btn = False
-        self._moved = False
-        self._wix_img = None
-
-        root.title("Greenlight")
-        root.configure(bg=BG)
-        root.overrideredirect(True)
-        root.attributes("-topmost", True)
-        try:
-            root.wm_attributes("-transparent", True)
-        except tk.TclError:
-            pass
-
-        self.canvas = tk.Canvas(root, width=W, height=H, bg=BG,
-                                highlightthickness=0, bd=0)
-        self.canvas.pack()
-
-        self._place_initial()
-        self._build()
-        self._bind()
-
-        root.update_idletasks()
-        root.lift()
-        root.after(50, lambda: root.attributes("-topmost", True))
-
-        self.poll()
-        self.blink()
-        self.keep_top()
-
-    # ---- layout ----
-    def _place_initial(self):
-        pos = read_json(POS_FILE, None) or {}
-        self.enabled = bool(pos.get("enabled", True))
-        sw = self.root.winfo_screenwidth()
-        sh = self.root.winfo_screenheight()
-        if "x" in pos and "y" in pos:
-            x, y = int(pos["x"]), int(pos["y"])
-        else:
-            x, y = (sw - W) // 2, 34          # centred, just below the menu bar
-        x = max(0, min(x, sw - W))
-        y = max(0, min(y, sh - H))
-        self.root.geometry(f"{W}x{H}+{x}+{y}")
-
-    def _build(self):
-        c = self.canvas
-        rounded_rect(c, PAD, PAD, W - PAD, H - PAD, 14,
-                     fill=HOUSING, outline=HOUSING_EDGE, width=1)
-
-        # Bulbs (glow + bulb per position)
-        self.glow_ids, self.bulb_ids = [], []
-        for cx in BULB_CX:
-            glow = c.create_oval(cx - R - 5, CYC - R - 5, cx + R + 5, CYC + R + 5,
-                                 fill=BG, outline="")
-            bulb = c.create_oval(cx - R, CYC - R, cx + R, CYC + R,
-                                 fill="#000000", outline="#000000", width=1)
-            self.glow_ids.append(glow)
-            self.bulb_ids.append(bulb)
-
-        # Wix mark INSIDE the green bulb (drawn last so it stays on top) —
-        # image if supplied, else a bold white placeholder. Shown only while
-        # the light is green (see render()).
-        self.wix_id = None
+        self.mtime = 0
+        self.wix = None
         if os.path.exists(WIX_IMG):
-            try:
-                self._wix_img = tk.PhotoImage(file=WIX_IMG)
-                self.wix_id = c.create_image(GREEN_CX, CYC, image=self._wix_img)
-            except Exception:
-                self._wix_img = None
-        if self._wix_img is None:
-            self.wix_id = c.create_text(GREEN_CX, CYC + 1, text="Wix",
-                                        font=("Helvetica", 8, "bold"), fill="#ffffff")
+            img = NSImage.alloc().initWithContentsOfFile_(WIX_IMG)
+            if img is not None:
+                self.wix = img
+        return self
 
-        # Power toggle button (arc ring + stem)
-        bx, by, br = BTN_CX, CYC, BTN_R
-        self.btn_ring = c.create_arc(bx - br, by - br, bx + br, by + br,
-                                     start=115, extent=310, style="arc", width=2,
-                                     outline=BTN_ON)
-        self.btn_stem = c.create_line(bx, by - br - 1, bx, by - 2, width=2, fill=BTN_ON)
+    # ---- setup ----
+    def build(self):
+        self.item = NSStatusBar.systemStatusBar().statusItemWithLength_(
+            NSVariableStatusItemLength)
 
-        self.render()
+        menu = NSMenu.alloc().init()
+        self.toggle_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Enabled", "toggleEnabled:", "")
+        self.toggle_item.setTarget_(self)
+        self.toggle_item.setState_(1 if self.enabled else 0)
+        menu.addItem_(self.toggle_item)
+        menu.addItem_(NSMenuItem.separatorItem())
+        quit_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Quit Greenlight", "quit:", "q")
+        quit_item.setTarget_(self)
+        menu.addItem_(quit_item)
+        self.item.setMenu_(menu)
 
-    def _bind(self):
-        for w in (self.root, self.canvas):
-            w.bind("<Button-1>", self._press)
-            w.bind("<B1-Motion>", self._move)
-            w.bind("<ButtonRelease-1>", self._release)
-            w.bind("<Double-Button-1>", lambda e: self.quit())
-            w.bind("<Escape>", lambda e: self.quit())
+        self.redraw()
+        self.poll_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            0.15, self, "poll:", None, True)
+        self.blink_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            0.45, self, "blink:", None, True)
 
-    # ---- rendering ----
-    def render(self):
-        c = self.canvas
-        if not self.enabled:
-            for i in range(3):
-                c.itemconfig(self.bulb_ids[i], fill=DISABLED_BULB, outline=DISABLED_EDGE)
-                c.itemconfig(self.glow_ids[i], fill=BG)
-        else:
-            cfg = STATE_MAP.get(self.state, STATE_MAP["idle"])
-            active = cfg["bulb"]
-            lit = active and (self.blink_on or not cfg["blink"])
-            for i, name in enumerate(ORDER):
-                col = BULB[name]
-                is_on = lit and name == active
-                c.itemconfig(self.bulb_ids[i],
-                             fill=col["on"] if is_on else col["off"],
-                             outline=col["glow"] if is_on else "#000000")
-                c.itemconfig(self.glow_ids[i],
-                             fill=col["glow"] if is_on else BG)
-        btn_color = BTN_ON if self.enabled else BTN_OFF
-        c.itemconfig(self.btn_ring, outline=btn_color)
-        c.itemconfig(self.btn_stem, fill=btn_color)
-        # Wix mark shows only when the light is actually green.
-        show_wix = self.enabled and self.state == "go"
-        c.itemconfig(self.wix_id, state="normal" if show_wix else "hidden")
+    # ---- drawing ----
+    def make_image(self):
+        img = NSImage.alloc().initWithSize_(NSMakeSize(IW, IH))
+        img.lockFocus()
+        cfg = STATE_MAP.get(self.state, STATE_MAP["idle"])
+        active = cfg["bulb"]
+        for i, name in enumerate(ORDER):
+            if not self.enabled:
+                rgb = DISABLED
+            else:
+                lit = (name == active) and (self.blink_on or not cfg["blink"])
+                rgb = BULB_ON[name] if lit else BULB_OFF[name]
+            nscolor(rgb).set()
+            rect = NSMakeRect(CX[i] - R, CY - R, 2 * R, 2 * R)
+            NSBezierPath.bezierPathWithOvalInRect_(rect).fill()
 
-    # ---- loops ----
-    def poll(self):
+        if self.enabled and self.state == "go":
+            self._draw_wix()
+        img.unlockFocus()
+        img.setTemplate_(False)
+        return img
+
+    def _draw_wix(self):
+        if self.wix is not None:
+            side = 2 * R - 2
+            self.wix.drawInRect_fromRect_operation_fraction_(
+                NSMakeRect(GREEN_CX - side / 2, CY - side / 2, side, side),
+                NSMakeRect(0, 0, 0, 0), 2, 1.0)         # 2 = NSCompositeSourceOver
+            return
+        # placeholder bold white "W"
+        attrs = {NSFontAttributeName: NSFont.boldSystemFontOfSize_(9),
+                 NSForegroundColorAttributeName: NSColor.whiteColor()}
+        s = NSString.stringWithString_("W")
+        sz = s.sizeWithAttributes_(attrs)
+        s.drawAtPoint_withAttributes_(
+            NSMakePoint(GREEN_CX - sz.width / 2.0, CY - sz.height / 2.0), attrs)
+
+    def redraw(self):
+        self.item.button().setImage_(self.make_image())
+
+    # ---- loops (selectors) ----
+    def poll_(self, timer):
         try:
             m = os.path.getmtime(STATE_FILE)
-            if m != self._mtime:
-                self._mtime = m
-                new = read_json(STATE_FILE, {}).get("state", "idle")
-                if new != self.state:
-                    self.state = new
-                    self.blink_on = True
-                    if self.enabled:
-                        self.render()
-        except FileNotFoundError:
-            pass
-        self.root.after(150, self.poll)
+        except OSError:
+            return
+        if m != self.mtime:
+            self.mtime = m
+            new = read_json(STATE_FILE, {}).get("state", "idle")
+            if new != self.state:
+                self.state = new
+                self.blink_on = True
+                if self.enabled:
+                    self.redraw()
 
-    def blink(self):
+    def blink_(self, timer):
         if self.enabled and STATE_MAP.get(self.state, {}).get("blink"):
             self.blink_on = not self.blink_on
-            self.render()
+            self.redraw()
         else:
             self.blink_on = True
-        self.root.after(450, self.blink)
 
-    def keep_top(self):
-        try:
-            self.root.attributes("-topmost", True)
-        except tk.TclError:
-            pass
-        self.root.after(3000, self.keep_top)
-
-    # ---- interaction (drag vs button click) ----
-    def _on_button(self, x, y):
-        return (x - BTN_CX) ** 2 + (y - CYC) ** 2 <= (BTN_R + 4) ** 2
-
-    def _press(self, e):
-        self._press_on_btn = self._on_button(e.x, e.y)
-        self._moved = False
-        self._drag = (e.x_root - self.root.winfo_x(),
-                      e.y_root - self.root.winfo_y())
-
-    def _move(self, e):
-        self._moved = True
-        if self._press_on_btn:
-            return                       # don't drag when starting on the button
-        self.root.geometry(f"+{e.x_root - self._drag[0]}+{e.y_root - self._drag[1]}")
-
-    def _release(self, e):
-        if self._press_on_btn and not self._moved:
-            self._toggle_enabled()
-        elif self._moved:
-            self._save_pos()
-        self._press_on_btn = False
-
-    def _toggle_enabled(self):
+    # ---- menu actions ----
+    def toggleEnabled_(self, sender):
         self.enabled = not self.enabled
         self.blink_on = True
-        self.render()
-        self._save_pos()
-
-    def _save_pos(self):
+        self.toggle_item.setState_(1 if self.enabled else 0)
         try:
-            with open(POS_FILE, "w") as f:
-                json.dump({"x": self.root.winfo_x(), "y": self.root.winfo_y(),
-                           "enabled": self.enabled}, f)
+            with open(CONFIG_FILE, "w") as f:
+                json.dump({"enabled": self.enabled}, f)
         except Exception:
             pass
+        self.redraw()
 
-    def quit(self):
+    def quit_(self, sender):
         try:
             os.remove(PID_FILE)
         except OSError:
             pass
-        self.root.destroy()
+        NSApplication.sharedApplication().terminate_(None)
 
 
 def main():
@@ -293,9 +204,15 @@ def main():
         sys.exit(0)
     with open(PID_FILE, "w") as f:
         f.write(str(os.getpid()))
-    root = tk.Tk()
-    Greenlight(root)
-    root.mainloop()
+
+    app = NSApplication.sharedApplication()
+    app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+    controller = GreenlightApp.alloc().init()
+    controller.build()
+    app.setDelegate_(controller)
+    global _keepalive
+    _keepalive = controller
+    app.run()
 
 
 if __name__ == "__main__":

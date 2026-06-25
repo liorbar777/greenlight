@@ -4,7 +4,9 @@ app.pid
 app.lock
 app.log
 pos.json
+config.json
 
 # Python
+.venv/
 __pycache__/
 *.pyc

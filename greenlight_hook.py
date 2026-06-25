@@ -29,6 +29,7 @@ BASE_DIR = os.path.join(HOME, "Documents", "all_projects", "greenlight")
 STATE_FILE = os.path.join(BASE_DIR, "state.json")
 PID_FILE = os.path.join(BASE_DIR, "app.pid")
 APP = os.path.join(BASE_DIR, "greenlight_app.py")
+APP_PY = os.path.join(BASE_DIR, ".venv", "bin", "python")  # has PyObjC for the GUI
 LOG = os.path.join(BASE_DIR, "app.log")
 
 VERDICT_RE = re.compile(
@@ -79,7 +80,7 @@ def ensure_app() -> None:
     try:
         with open(LOG, "a") as log:
             subprocess.Popen(
-                [PY, APP],
+                [APP_PY, APP],
                 stdout=log, stderr=log, stdin=subprocess.DEVNULL,
                 start_new_session=True,
             )
