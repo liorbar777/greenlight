@@ -6,7 +6,7 @@
 
 <p align="center">
   <b>A tiny traffic light in your menu bar that shows what Claude Code is doing.</b><br>
-  Working? Waiting on you? Done? Just glance up — stop babysitting the terminal.
+  Let Claude work while you switch tabs or get other things done — just glance up to catch when it's your turn or it's finished. No more babysitting the terminal.
 </p>
 
 <p align="center">
