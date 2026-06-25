@@ -152,6 +152,13 @@ def main() -> None:
     except Exception:
         hook_input = {}
 
+    # React to Claude Code ONLY. Other agents (e.g. Cursor's built-in chat) also
+    # run ~/.claude hooks, but their transcript lives under ~/.cursor/ instead of
+    # ~/.claude/. Ignore anything that isn't a Claude Code transcript.
+    tp = hook_input.get("transcript_path") or ""
+    if tp and "/.claude/" not in tp:
+        sys.exit(0)
+
     if intent == "stop":
         state = resolve_stop_state(hook_input)
     elif intent == "pretool":
