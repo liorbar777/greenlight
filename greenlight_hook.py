@@ -5,10 +5,13 @@ Usage:  greenlight_hook.py <intent>
     working   -> solid amber   (Claude is working/thinking)
     waiting   -> blinking amber (Claude is waiting on you)
     idle      -> all dim
-    stop      -> green, unless the final assistant message carries a
-                 negative verdict marker, then red.
+    stop      -> green, unless the final assistant message CLOSES with a
+                 negative verdict marker (its own line, last non-empty line),
+                 then red.
 
-Verdict marker (case-insensitive, anywhere in Claude's final message):
+Verdict marker (case-insensitive). It only counts as a verdict when it is the
+LAST non-empty line of the message (a deliberate footer) — quoting or explaining
+the marker mid-message, or ending on a question, does NOT trip the light:
     green: GREENLIGHT: GO / GREEN / GOOD / PASS[ED] / OK[AY] / SUCCESS / DONE /
            SHIP[PED] / APPROVED / LGTM
     red:   GREENLIGHT: NO-GO / RED / FAIL[ED]/FAILURE / BAD / BLOCK[ED] /
@@ -36,8 +39,16 @@ LOG = os.path.join(RUNTIME_DIR, "app.log")
 APP = os.path.join(CODE_DIR, "greenlight_app.py")
 APP_PY = os.path.join(CODE_DIR, ".venv", "bin", "python")  # has PyObjC for the GUI
 
-VERDICT_RE = re.compile(
-    r"GREENLIGHT\s*[:=\-]\s*"
+# A verdict only counts when it stands alone as a PLAIN footer line at column 0
+# (e.g. "GREENLIGHT: NO-GO — reason"). The marker must START the line with no
+# leading whitespace or markdown markup. Combined with resolve_stop_state (which
+# checks ONLY the last non-empty line, after stripping fenced code blocks), this
+# means a marker that is quoted in prose, wrapped in backticks, indented, inside
+# a blockquote, or shown inside a ``` example never trips the light — and a turn
+# that ends on a question or any normal sentence stays green. Only a deliberate
+# closing verdict does.
+VERDICT_LINE_RE = re.compile(
+    r"^GREENLIGHT\s*[:=\-]\s*"
     # longer variants first so the full word is captured (PASSED before PASS, etc.)
     r"(NO[\s\-_]?GO|NOGO|GREEN|GO|GOOD|PASSED|PASS|OKAY|OK|SUCCESS|DONE|SHIPPED|SHIP|APPROVED|LGTM|"
     r"RED|FAILED|FAILURE|FAIL|BAD|BLOCKED|BLOCK|STOPPED|STOP|ERROR|REJECTED|REJECT|ABORTED|ABORT)\b",
@@ -205,17 +216,27 @@ def tool_will_prompt(tool: str, tool_input: dict, cwd: str) -> bool:
 
 
 def resolve_stop_state(hook_input: dict) -> str:
-    # A finished turn is green by default, red only on a negative verdict marker.
+    # Green by default. Red ONLY when the assistant closes the turn with a
+    # deliberate verdict footer: a PLAIN marker line at column 0 that is the
+    # last non-empty line of the message, ignoring fenced code blocks. So a real
+    # negative verdict (no-go PR, error, failed build, blocked task) turns it
+    # red, while quoting/explaining the marker in prose, in backticks, indented,
+    # inside a ``` example, or ending the turn on a question stays green.
     # We deliberately do NOT blink just because the message ends with a question:
     # blinking is reserved for real blocking prompts (AskUserQuestion / plan /
-    # permission approvals), handled in the pretool branch — otherwise the light
-    # would blink at the end of nearly every turn and the signal becomes noise.
+    # permission approvals), handled in the pretool branch.
     path = hook_input.get("transcript_path", "")
     text = last_assistant_text(path) if path else ""
-    matches = VERDICT_RE.findall(text)
-    if matches:
-        # Last marker wins, in case more than one appears in the message.
-        token = matches[-1].lower().replace("_", "-").replace(" ", "-")
+    # Drop fenced code blocks so a marker SHOWN as an example never counts.
+    text = re.sub(r"```.*?```", "", text, flags=re.DOTALL)
+    last_line = ""
+    for ln in reversed(text.splitlines()):
+        if ln.strip():
+            last_line = ln.rstrip()  # keep leading indent so indented lines fail ^GREENLIGHT
+            break
+    m = VERDICT_LINE_RE.match(last_line)
+    if m:
+        token = m.group(1).lower().replace("_", "-").replace(" ", "-")
         return "nogo" if token in NEGATIVE else "go"
     return "go"
 
