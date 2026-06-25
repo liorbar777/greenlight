@@ -49,6 +49,12 @@ NEGATIVE = {"no-go", "nogo", "red", "fail", "failed", "failure", "bad", "block",
             "abort", "aborted"}
 TAIL_BYTES = 262144  # read only the last 256 KB of the transcript (one message)
 
+# Tools that ALWAYS hand control back to the user -> always blink.
+ALWAYS_PROMPTS = {"AskUserQuestion", "ExitPlanMode"}
+# defaultMode values under which a tool runs without ever prompting.
+BLANKET_APPROVE_MODES = {"bypassPermissions"}
+EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+
 
 def write_state(state: str) -> None:
     os.makedirs(RUNTIME_DIR, exist_ok=True)
@@ -139,6 +145,71 @@ def last_assistant_text(transcript_path: str) -> str:
 QUESTION_RE = re.compile(r"\?(?=[\s)*_`\"'>\]]|$)")
 
 
+def _settings_files(cwd: str) -> list:
+    home = os.path.expanduser("~/.claude")
+    paths = [os.path.join(home, "settings.json"),
+             os.path.join(home, "settings.local.json")]
+    if cwd:
+        paths += [os.path.join(cwd, ".claude", "settings.json"),
+                  os.path.join(cwd, ".claude", "settings.local.json")]
+    return paths
+
+
+def _load_permissions(cwd: str) -> tuple:
+    """Collect permissions.allow rules and the defaultMode across user- and
+    project-level settings. Best-effort: unreadable/missing files are skipped."""
+    allow, mode = [], None
+    for p in _settings_files(cwd):
+        try:
+            with open(p) as f:
+                perms = json.load(f).get("permissions", {})
+        except Exception:
+            continue
+        allow.extend(perms.get("allow", []))
+        mode = perms.get("defaultMode", mode)
+    return allow, mode
+
+
+def _rule_allows(rule: str, tool: str, tool_input: dict) -> bool:
+    """Does a single allow rule cover this tool call? Mirrors the common Claude
+    Code rule shapes; deliberately simple — when unsure we say no (see caller)."""
+    if rule == tool:                                  # exact: Read, mcp__s__tool…
+        return True
+    if (tool.startswith("mcp__") and rule.startswith("mcp__")
+            and tool.startswith(rule + "__")):        # whole-server grant
+        return True
+    if tool == "Bash" and rule.startswith("Bash(") and rule.endswith(")"):
+        pat = rule[5:-1]
+        cmd = (tool_input or {}).get("command", "")
+        if pat in ("", "*"):
+            return True
+        if pat.endswith(":*"):                         # "git status:*" prefix form
+            return cmd.startswith(pat[:-2])
+        if pat.endswith("*"):
+            return cmd.startswith(pat[:-1])
+        return cmd == pat
+    if rule.endswith("*") and tool.startswith(rule[:-1]):   # generic wildcard
+        return True
+    return False
+
+
+def tool_will_prompt(tool: str, tool_input: dict, cwd: str) -> bool:
+    """True if calling `tool` will pop an approve/deny prompt — i.e. it isn't
+    already covered by an allow rule (and we're not in a blanket-approve mode).
+    Lets us blink the light *before* the user has to click. On ANY uncertainty
+    we return False (stay solid): a missed blink is friendlier than a light that
+    blinks through routine auto-approved work."""
+    try:
+        allow, mode = _load_permissions(cwd)
+        if mode in BLANKET_APPROVE_MODES:
+            return False
+        if mode == "acceptEdits" and tool in EDIT_TOOLS:
+            return False
+        return not any(_rule_allows(r, tool, tool_input) for r in allow)
+    except Exception:
+        return False
+
+
 def ends_with_question(text: str) -> bool:
     """True if Claude's final message hands back with a question — its last
     non-empty line contains a sentence-ending '?'. That means 'your turn, I'm
@@ -182,9 +253,17 @@ def main() -> None:
     if intent == "stop":
         state = resolve_stop_state(hook_input)
     elif intent == "pretool":
-        # Tool-aware: tools that prompt the user mean "waiting on you".
+        # Blink when the user is about to be asked to act: tools that always
+        # prompt, plus any tool that isn't pre-approved (so an approve/deny
+        # dialog will pop and block right after this hook). Notification doesn't
+        # fire for prompts here, so PreToolUse is our only pre-prompt signal.
+        # PostToolUse flips back to solid amber once the tool actually runs.
         tool = hook_input.get("tool_name", "")
-        state = "waiting" if tool in {"AskUserQuestion", "ExitPlanMode"} else "working"
+        if tool in ALWAYS_PROMPTS or tool_will_prompt(
+                tool, hook_input.get("tool_input", {}), hook_input.get("cwd", "")):
+            state = "waiting"
+        else:
+            state = "working"
     elif intent in {"working", "waiting", "idle", "go", "nogo"}:
         state = intent
     else:
