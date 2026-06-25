@@ -22,7 +22,7 @@ with `GREENLIGHT_PY=/path/to/python3 ./install.sh` (any python3 with tkinter).
 |-------|---------|-----------------------|
 | ⚫ all dim | idle / no active turn | `SessionStart` |
 | 🟡 solid amber | Claude is working / thinking | `UserPromptSubmit`, `PreToolUse`, `PostToolUse` |
-| 🟡 blinking amber | Claude is **waiting on you** (permission prompt / question) | `Notification` |
+| 🟡 blinking amber | Claude is **waiting on you** (a question / plan approval) | `PreToolUse` (AskUserQuestion / ExitPlanMode) |
 | 🟢 green | finished OK, or a positive verdict | `Stop` |
 | 🔴 red | a negative go/no-go verdict | `Stop` |
 
@@ -95,6 +95,14 @@ next login. `greenlight.sh` is launchd-aware: `stop` boots the job out
 3. `rm -rf ~/Documents/all_projects/greenlight`
 
 ## Notes / limitations
+
+- **Tool-permission prompts ("Allow this command?") do not blink** — they stay
+  solid amber. Blinking relies on Claude Code's `Notification` hook, which (at
+  least in this setup) does not fire for permission prompts — verified with a
+  34-second open prompt that produced zero `Notification` events. Only
+  `AskUserQuestion` / `ExitPlanMode` (which ride `PreToolUse`) blink. There is
+  no hook-based way to distinguish "waiting on a permission prompt" from "a tool
+  is running", so solid amber is the honest signal for both.
 
 - One light is shared across all Claude Code sessions; concurrent
   sessions will fight over the state. Fine for a single active session.
