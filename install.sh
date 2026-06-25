@@ -132,7 +132,8 @@ def group(i, m=None):
 def is_gl(g): return any("greenlight_hook.py" in h.get("command", "") for h in g.get("hooks", []))
 wiring = {"UserPromptSubmit": ("working", None), "PreToolUse": ("pretool", "*"),
           "PostToolUse": ("working", "*"), "Notification": ("waiting", None),
-          "Stop": ("stop", None), "SessionStart": ("idle", None)}
+          "Stop": ("stop", None), "SessionStart": ("idle", None),
+          "SessionEnd": ("idle", None)}   # session ends -> drop to gray (don't hold last colour)
 for ev, (intent, m) in wiring.items():
     grp = hooks.setdefault(ev, [])
     grp[:] = [g for g in grp if not is_gl(g)]
