@@ -1,0 +1,10 @@
+# Runtime artifacts (regenerated at run time)
+state.json
+app.pid
+app.lock
+app.log
+pos.json
+
+# Python
+__pycache__/
+*.pyc
