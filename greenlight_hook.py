@@ -3,19 +3,12 @@
 
 Usage:  greenlight_hook.py <intent>
     working   -> solid amber   (Claude is working/thinking)
-    waiting   -> blinking amber (Claude is waiting on you)
+    waiting   -> blinking red  (Claude is waiting on you)
     idle      -> all dim
-    stop      -> green, unless the final assistant message CLOSES with a
-                 negative verdict marker (its own line, last non-empty line),
-                 then red.
+    stop      -> green         (turn finished)
 
-Verdict marker (case-insensitive). It only counts as a verdict when it is the
-LAST non-empty line of the message (a deliberate footer) — quoting or explaining
-the marker mid-message, or ending on a question, does NOT trip the light:
-    green: GREENLIGHT: GO / GREEN / GOOD / PASS[ED] / OK[AY] / SUCCESS / DONE /
-           SHIP[PED] / APPROVED / LGTM
-    red:   GREENLIGHT: NO-GO / RED / FAIL[ED]/FAILURE / BAD / BLOCK[ED] /
-           STOP[PED] / ERROR / REJECT[ED] / ABORT[ED]
+It's a pure status light: a finished turn is always green — there is no
+error/verdict path.
 
 It also makes sure the floating light (greenlight_app.py) is running,
 launching it detached if needed. Hooks must stay fast and never fail the
@@ -23,7 +16,6 @@ turn, so every step is best-effort and the script always exits 0.
 """
 import json
 import os
-import re
 import subprocess
 import sys
 
@@ -38,26 +30,6 @@ PID_FILE = os.path.join(RUNTIME_DIR, "app.pid")
 LOG = os.path.join(RUNTIME_DIR, "app.log")
 APP = os.path.join(CODE_DIR, "greenlight_app.py")
 APP_PY = os.path.join(CODE_DIR, ".venv", "bin", "python")  # has PyObjC for the GUI
-
-# A verdict only counts when it stands alone as a PLAIN footer line at column 0
-# (e.g. "GREENLIGHT: NO-GO — reason"). The marker must START the line with no
-# leading whitespace or markdown markup. Combined with resolve_stop_state (which
-# checks ONLY the last non-empty line, after stripping fenced code blocks), this
-# means a marker that is quoted in prose, wrapped in backticks, indented, inside
-# a blockquote, or shown inside a ``` example never trips the light — and a turn
-# that ends on a question or any normal sentence stays green. Only a deliberate
-# closing verdict does.
-VERDICT_LINE_RE = re.compile(
-    r"^GREENLIGHT\s*[:=\-]\s*"
-    # longer variants first so the full word is captured (PASSED before PASS, etc.)
-    r"(NO[\s\-_]?GO|NOGO|GREEN|GO|GOOD|PASSED|PASS|OKAY|OK|SUCCESS|DONE|SHIPPED|SHIP|APPROVED|LGTM|"
-    r"RED|FAILED|FAILURE|FAIL|BAD|BLOCKED|BLOCK|STOPPED|STOP|ERROR|REJECTED|REJECT|ABORTED|ABORT)\b",
-    re.IGNORECASE,
-)
-NEGATIVE = {"no-go", "nogo", "red", "fail", "failed", "failure", "bad", "block",
-            "blocked", "stop", "stopped", "error", "reject", "rejected",
-            "abort", "aborted"}
-TAIL_BYTES = 262144  # read only the last 256 KB of the transcript (one message)
 
 # Tools that ALWAYS hand control back to the user -> always blink.
 ALWAYS_PROMPTS = {"AskUserQuestion", "ExitPlanMode"}
@@ -119,35 +91,6 @@ def ensure_app() -> None:
             )
     except Exception:
         pass
-
-
-def last_assistant_text(transcript_path: str) -> str:
-    try:
-        with open(transcript_path, "rb") as f:
-            f.seek(0, os.SEEK_END)
-            size = f.tell()
-            f.seek(max(0, size - TAIL_BYTES))
-            chunk = f.read().decode("utf-8", "replace")
-    except Exception:
-        return ""
-    # A truncated leading line just fails json.loads and is skipped; the final
-    # assistant message is always fully contained in the tail.
-    for line in reversed(chunk.splitlines()):
-        try:
-            entry = json.loads(line)
-        except Exception:
-            continue
-        if entry.get("type") != "assistant":
-            continue
-        content = entry.get("message", {}).get("content", [])
-        if isinstance(content, str):
-            return content
-        parts = [b.get("text", "") for b in content
-                 if isinstance(b, dict) and b.get("type") == "text"]
-        text = " ".join(p for p in parts if p)
-        if text.strip():
-            return text
-    return ""
 
 
 def _settings_files(cwd: str) -> list:
@@ -215,32 +158,6 @@ def tool_will_prompt(tool: str, tool_input: dict, cwd: str) -> bool:
         return False
 
 
-def resolve_stop_state(hook_input: dict) -> str:
-    # Green by default. Red ONLY when the assistant closes the turn with a
-    # deliberate verdict footer: a PLAIN marker line at column 0 that is the
-    # last non-empty line of the message, ignoring fenced code blocks. So a real
-    # negative verdict (no-go PR, error, failed build, blocked task) turns it
-    # red, while quoting/explaining the marker in prose, in backticks, indented,
-    # inside a ``` example, or ending the turn on a question stays green.
-    # We deliberately do NOT blink just because the message ends with a question:
-    # blinking is reserved for real blocking prompts (AskUserQuestion / plan /
-    # permission approvals), handled in the pretool branch.
-    path = hook_input.get("transcript_path", "")
-    text = last_assistant_text(path) if path else ""
-    # Drop fenced code blocks so a marker SHOWN as an example never counts.
-    text = re.sub(r"```.*?```", "", text, flags=re.DOTALL)
-    last_line = ""
-    for ln in reversed(text.splitlines()):
-        if ln.strip():
-            last_line = ln.rstrip()  # keep leading indent so indented lines fail ^GREENLIGHT
-            break
-    m = VERDICT_LINE_RE.match(last_line)
-    if m:
-        token = m.group(1).lower().replace("_", "-").replace(" ", "-")
-        return "nogo" if token in NEGATIVE else "go"
-    return "go"
-
-
 def main() -> None:
     intent = sys.argv[1] if len(sys.argv) > 1 else "idle"
     try:
@@ -256,7 +173,8 @@ def main() -> None:
         sys.exit(0)
 
     if intent == "stop":
-        state = resolve_stop_state(hook_input)
+        # Pure status light: a finished turn is always green, no verdict parsing.
+        state = "go"
     elif intent == "pretool":
         # Blink when the user is about to be asked to act: tools that always
         # prompt, plus any tool that isn't pre-approved (so an approve/deny
@@ -269,7 +187,7 @@ def main() -> None:
             state = "waiting"
         else:
             state = "working"
-    elif intent in {"working", "waiting", "idle", "go", "nogo"}:
+    elif intent in {"working", "waiting", "idle", "go"}:
         state = intent
     else:
         state = "idle"
