@@ -19,37 +19,46 @@ import fcntl
 import json
 import os
 import sys
+import time
+import traceback
 
 import objc
 from AppKit import (
     NSApplication, NSApplicationActivationPolicyAccessory, NSStatusBar,
     NSVariableStatusItemLength, NSImage, NSColor, NSBezierPath, NSMenu,
     NSMenuItem, NSFont, NSFontAttributeName, NSForegroundColorAttributeName,
+    NSBitmapImageRep, NSGraphicsContext, NSDeviceRGBColorSpace,
 )
 from Foundation import (
     NSObject, NSTimer, NSMakeRect, NSMakeSize, NSMakePoint, NSString,
 )
 
-HOME = os.path.expanduser("~")
-BASE_DIR = os.path.join(HOME, "Documents", "all_projects", "greenlight")
-STATE_FILE = os.path.join(BASE_DIR, "state.json")
-CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
-PID_FILE = os.path.join(BASE_DIR, "app.pid")
-LOCK_FILE = os.path.join(BASE_DIR, "app.lock")
-WIX_IMG = os.path.join(BASE_DIR, "wix_white.png")
+# Code lives wherever this file is; runtime (lock/state/config/pid) is pinned to
+# ONE canonical dir so any copy of the app shares a single lock -> single instance.
+# Override with GREENLIGHT_DIR (e.g. for isolated dev).
+CODE_DIR = os.path.dirname(os.path.abspath(__file__))
+RUNTIME_DIR = os.environ.get("GREENLIGHT_DIR") or os.path.expanduser(
+    "~/Library/Application Support/Greenlight")
+os.makedirs(RUNTIME_DIR, exist_ok=True)
+STATE_FILE = os.path.join(RUNTIME_DIR, "state.json")
+CONFIG_FILE = os.path.join(RUNTIME_DIR, "config.json")
+PID_FILE = os.path.join(RUNTIME_DIR, "app.pid")
+LOCK_FILE = os.path.join(RUNTIME_DIR, "app.lock")
+CONTROL_FILE = os.path.join(RUNTIME_DIR, "control.json")   # {"visible": bool}
+WIX_IMG = os.path.join(CODE_DIR, "wix_white.png")
 
 # Icon geometry (points)
-IW, IH = 46, 18
-R = 6
+# Menu-bar item: the full horizontal 3-lamp traffic light.
+IW, IH = 78, 24
+R = 11
 CY = IH / 2.0
-CX = [11, 23, 35]          # red, amber, green centres
+CX = [13, 39, 65]          # red, amber, green centres
 GREEN_CX = CX[2]
 
 BULB_ON = {"red": (1.00, 0.27, 0.23), "amber": (1.00, 0.70, 0.25),
            "green": (0.20, 0.84, 0.29)}
-BULB_OFF = {"red": (0.34, 0.13, 0.11), "amber": (0.34, 0.25, 0.10),
-            "green": (0.09, 0.27, 0.14)}
 DISABLED = (0.42, 0.42, 0.44)
+OFF_LAMP = (0.60, 0.60, 0.63)   # inactive lamp = light gray (only the lit one is coloured)
 
 STATE_MAP = {
     "idle":    {"bulb": None,    "blink": False},
@@ -80,14 +89,22 @@ class GreenlightApp(NSObject):
             return None
         self.state = "idle"
         self.enabled = bool(read_json(CONFIG_FILE, {}).get("enabled", True))
+        self.visible = bool(read_json(CONTROL_FILE, {}).get("visible", True))
         self.blink_on = True
         self.mtime = 0
+        self.ctl_mtime = 0
         self.wix = None
         if os.path.exists(WIX_IMG):
             img = NSImage.alloc().initWithContentsOfFile_(WIX_IMG)
             if img is not None:
                 self.wix = img
         return self
+
+    # ---- app delegate ----
+    def applicationDidFinishLaunching_(self, notification):
+        # Status item is created in main() BEFORE the run loop — creating it here
+        # (after the app finishes launching) leaves it invisible. Nothing to do.
+        pass
 
     # ---- setup ----
     def build(self):
@@ -101,6 +118,13 @@ class GreenlightApp(NSObject):
         self.toggle_item.setState_(1 if self.enabled else 0)
         menu.addItem_(self.toggle_item)
         menu.addItem_(NSMenuItem.separatorItem())
+        # "Hide" just removes the dot (process stays alive); clicking the
+        # Greenlight app icon again brings it back. This avoids ever creating a
+        # second status item in the session, which macOS won't draw.
+        hide_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Hide Icon", "hideIcon:", "")
+        hide_item.setTarget_(self)
+        menu.addItem_(hide_item)
         quit_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
             "Quit Greenlight", "quit:", "q")
         quit_item.setTarget_(self)
@@ -115,8 +139,15 @@ class GreenlightApp(NSObject):
 
     # ---- drawing ----
     def make_image(self):
-        img = NSImage.alloc().initWithSize_(NSMakeSize(IW, IH))
-        img.lockFocus()
+        # Render into an offscreen bitmap (NOT lockFocus): lockFocus draws nothing
+        # when the app runs as a background agent with no window/screen focus, which
+        # left the menu-bar item blank/invisible. A bitmap context works headless.
+        rep = NSBitmapImageRep.alloc().initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel_(
+            None, IW, IH, 8, 4, True, False, NSDeviceRGBColorSpace, 0, 0)
+        ctx = NSGraphicsContext.graphicsContextWithBitmapImageRep_(rep)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.setCurrentContext_(ctx)
+
         cfg = STATE_MAP.get(self.state, STATE_MAP["idle"])
         active = cfg["bulb"]
         for i, name in enumerate(ORDER):
@@ -124,14 +155,16 @@ class GreenlightApp(NSObject):
                 rgb = DISABLED
             else:
                 lit = (name == active) and (self.blink_on or not cfg["blink"])
-                rgb = BULB_ON[name] if lit else BULB_OFF[name]
+                rgb = BULB_ON[name] if lit else OFF_LAMP
             nscolor(rgb).set()
             rect = NSMakeRect(CX[i] - R, CY - R, 2 * R, 2 * R)
             NSBezierPath.bezierPathWithOvalInRect_(rect).fill()
-
         if self.enabled and self.state == "go":
             self._draw_wix()
-        img.unlockFocus()
+
+        NSGraphicsContext.restoreGraphicsState()
+        img = NSImage.alloc().initWithSize_(NSMakeSize(IW, IH))
+        img.addRepresentation_(rep)
         img.setTemplate_(False)
         return img
 
@@ -153,20 +186,46 @@ class GreenlightApp(NSObject):
     def redraw(self):
         self.item.button().setImage_(self.make_image())
 
+    # ---- visibility (single persistent item, toggled not recreated) ----
+    def apply_visibility(self):
+        try:
+            self.item.setVisible_(bool(self.visible))
+        except Exception:
+            pass
+
+    def _write_control(self):
+        try:
+            with open(CONTROL_FILE, "w") as f:
+                json.dump({"visible": bool(self.visible)}, f)
+        except Exception:
+            pass
+
     # ---- loops (selectors) ----
     def poll_(self, timer):
+        # state.json -> lamp colour
         try:
             m = os.path.getmtime(STATE_FILE)
+            if m != self.mtime:
+                self.mtime = m
+                new = read_json(STATE_FILE, {}).get("state", "idle")
+                if new != self.state:
+                    self.state = new
+                    self.blink_on = True
+                    if self.enabled:
+                        self.redraw()
         except OSError:
-            return
-        if m != self.mtime:
-            self.mtime = m
-            new = read_json(STATE_FILE, {}).get("state", "idle")
-            if new != self.state:
-                self.state = new
-                self.blink_on = True
-                if self.enabled:
-                    self.redraw()
+            pass
+        # control.json -> show/hide (a 2nd launch writes visible=true to re-show)
+        try:
+            cm = os.path.getmtime(CONTROL_FILE)
+            if cm != self.ctl_mtime:
+                self.ctl_mtime = cm
+                v = bool(read_json(CONTROL_FILE, {}).get("visible", True))
+                if v != self.visible:
+                    self.visible = v
+                    self.apply_visibility()
+        except OSError:
+            pass
 
     def blink_(self, timer):
         if self.enabled and STATE_MAP.get(self.state, {}).get("blink"):
@@ -187,7 +246,24 @@ class GreenlightApp(NSObject):
             pass
         self.redraw()
 
+    def hideIcon_(self, sender):
+        # Hide the dot but keep the process alive — clicking the app icon again
+        # re-shows it (no second status item is ever created).
+        self.visible = False
+        self._write_control()
+        self.apply_visibility()
+
     def quit_(self, sender):
+        # Release the single-instance lock immediately, so an instant relaunch
+        # doesn't race a slow NSApplication termination and exit on the lock.
+        global _lock_keep
+        try:
+            if _lock_keep is not None:
+                fcntl.flock(_lock_keep, fcntl.LOCK_UN)
+                _lock_keep.close()
+                _lock_keep = None
+        except Exception:
+            pass
         try:
             os.remove(PID_FILE)
         except OSError:
@@ -195,23 +271,67 @@ class GreenlightApp(NSObject):
         NSApplication.sharedApplication().terminate_(None)
 
 
-def main():
-    os.makedirs(BASE_DIR, exist_ok=True)
-    lock = open(LOCK_FILE, "w")
+def _dlog(msg):
     try:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
+        with open(os.path.join(RUNTIME_DIR, "app.log"), "a") as f:
+            f.write(f"[greenlight] {msg}\n")
+    except Exception:
+        pass
+
+
+_lock_keep = None  # keep the lock fd alive for the process lifetime
+
+
+def main():
+    _dlog(f"=== start pid={os.getpid()} runtime={RUNTIME_DIR}")
+    os.makedirs(RUNTIME_DIR, exist_ok=True)
+    lock = open(LOCK_FILE, "w")
+    # Single instance. On a quick Quit+relaunch the dying instance may still hold
+    # the lock for a moment, so wait briefly for it to release before giving up.
+    acquired = False
+    for _ in range(25):                       # ~2.5s grace
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquired = True
+            break
+        except OSError:
+            time.sleep(0.1)
+    if not acquired:
+        # A persistent instance is already running. Don't start a second one
+        # (macOS won't draw its status item) — just ask the running one to show
+        # itself, so clicking the app icon "reopens" the dot.
+        _dlog("daemon already running -> requesting show + exiting")
+        try:
+            with open(CONTROL_FILE, "w") as f:
+                json.dump({"visible": True}, f)
+        except Exception:
+            pass
         sys.exit(0)
+    _dlog("lock acquired")
     with open(PID_FILE, "w") as f:
         f.write(str(os.getpid()))
+    global _lock_keep
+    _lock_keep = lock  # don't let the lock fd get garbage-collected
+    # A freshly started daemon always shows the icon (don't persist a prior Hide).
+    try:
+        with open(CONTROL_FILE, "w") as f:
+            json.dump({"visible": True}, f)
+    except Exception:
+        pass
 
     app = NSApplication.sharedApplication()
     app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
     controller = GreenlightApp.alloc().init()
-    controller.build()
     app.setDelegate_(controller)
+    try:
+        controller.build()              # MUST be before app.run() or the item is invisible
+        controller.apply_visibility()
+        _dlog(f"build ok visible={controller.visible}")
+    except Exception:
+        _dlog("build FAILED:\n" + traceback.format_exc())
     global _keepalive
     _keepalive = controller
+    _dlog("entering run loop")
     app.run()
 
 

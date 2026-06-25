@@ -9,8 +9,10 @@ Usage:  greenlight_hook.py <intent>
                  negative verdict marker, then red.
 
 Verdict marker (case-insensitive, anywhere in Claude's final message):
-    GREENLIGHT: GO      / GREEN / PASS / GOOD   -> green
-    GREENLIGHT: NO-GO   / RED   / FAIL / BAD    -> red
+    green: GREENLIGHT: GO / GREEN / GOOD / PASS[ED] / OK[AY] / SUCCESS / DONE /
+           SHIP[PED] / APPROVED / LGTM
+    red:   GREENLIGHT: NO-GO / RED / FAIL[ED]/FAILURE / BAD / BLOCK[ED] /
+           STOP[PED] / ERROR / REJECT[ED] / ABORT[ED]
 
 It also makes sure the floating light (greenlight_app.py) is running,
 launching it detached if needed. Hooks must stay fast and never fail the
@@ -22,26 +24,33 @@ import re
 import subprocess
 import sys
 
-PY = "/Users/liorbar/.local/share/uv/python/cpython-3.11.14-macos-aarch64-none/bin/python3.11"
-LAUNCHD_LABEL = "com.liorbar.greenlight"
-HOME = os.path.expanduser("~")
-BASE_DIR = os.path.join(HOME, "Documents", "all_projects", "greenlight")
-STATE_FILE = os.path.join(BASE_DIR, "state.json")
-PID_FILE = os.path.join(BASE_DIR, "app.pid")
-APP = os.path.join(BASE_DIR, "greenlight_app.py")
-APP_PY = os.path.join(BASE_DIR, ".venv", "bin", "python")  # has PyObjC for the GUI
-LOG = os.path.join(BASE_DIR, "app.log")
+LAUNCHD_LABEL = "com.greenlight.menubar"
+CODE_DIR = os.path.dirname(os.path.abspath(__file__))
+# Runtime files share ONE canonical dir (must match greenlight_app.py) so the
+# state the hook writes is the state the app reads. Override with GREENLIGHT_DIR.
+RUNTIME_DIR = os.environ.get("GREENLIGHT_DIR") or os.path.expanduser(
+    "~/Library/Application Support/Greenlight")
+STATE_FILE = os.path.join(RUNTIME_DIR, "state.json")
+PID_FILE = os.path.join(RUNTIME_DIR, "app.pid")
+LOG = os.path.join(RUNTIME_DIR, "app.log")
+APP = os.path.join(CODE_DIR, "greenlight_app.py")
+APP_PY = os.path.join(CODE_DIR, ".venv", "bin", "python")  # has PyObjC for the GUI
 
 VERDICT_RE = re.compile(
-    r"GREENLIGHT\s*[:=\-]\s*(NO[\s\-_]?GO|NOGO|GO|RED|GREEN|FAIL|PASS|BAD|GOOD)",
+    r"GREENLIGHT\s*[:=\-]\s*"
+    # longer variants first so the full word is captured (PASSED before PASS, etc.)
+    r"(NO[\s\-_]?GO|NOGO|GREEN|GO|GOOD|PASSED|PASS|OKAY|OK|SUCCESS|DONE|SHIPPED|SHIP|APPROVED|LGTM|"
+    r"RED|FAILED|FAILURE|FAIL|BAD|BLOCKED|BLOCK|STOPPED|STOP|ERROR|REJECTED|REJECT|ABORTED|ABORT)\b",
     re.IGNORECASE,
 )
-NEGATIVE = {"no-go", "nogo", "red", "fail", "bad"}
+NEGATIVE = {"no-go", "nogo", "red", "fail", "failed", "failure", "bad", "block",
+            "blocked", "stop", "stopped", "error", "reject", "rejected",
+            "abort", "aborted"}
 TAIL_BYTES = 262144  # read only the last 256 KB of the transcript (one message)
 
 
 def write_state(state: str) -> None:
-    os.makedirs(BASE_DIR, exist_ok=True)
+    os.makedirs(RUNTIME_DIR, exist_ok=True)
     tmp = STATE_FILE + ".tmp"
     with open(tmp, "w") as f:
         json.dump({"state": state}, f)
@@ -54,6 +63,13 @@ def app_running() -> bool:
             pid = int(f.read().strip())
         os.kill(pid, 0)
         return True
+    except Exception:
+        pass
+    try:
+        return subprocess.run(
+            ["pgrep", "-f", "greenlight_app.py"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        ).returncode == 0
     except Exception:
         return False
 

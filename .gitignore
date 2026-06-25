@@ -3,8 +3,11 @@ state.json
 app.pid
 app.lock
 app.log
-pos.json
 config.json
+pos.json
+
+# Generated at install time (machine-specific absolute paths)
+*.plist
 
 # Python
 .venv/
