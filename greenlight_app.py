@@ -49,11 +49,14 @@ WIX_IMG = os.path.join(CODE_DIR, "wix_white.png")
 
 # Icon geometry (points)
 # Menu-bar item: the full horizontal 3-lamp traffic light.
-IW, IH = 78, 24
-R = 11
+IW, IH = 84, 24
+R = 8                       # smaller lamp leaves room for the glow inside 24px
 CY = IH / 2.0
-CX = [13, 39, 65]          # red, amber, green centres
+CX = [16, 42, 68]          # red, amber, green centres
 GREEN_CX = CX[2]
+# Soft halo drawn behind the lit lamp only: (extra radius, alpha), faint+large first.
+# Max extra (4) keeps the glow within the 24px height (CY 12 ± R+4 = 0..24).
+GLOW_RINGS = ((4.0, 0.12), (2.5, 0.18), (1.0, 0.28))
 
 BULB_ON = {"red": (1.00, 0.27, 0.23), "amber": (1.00, 0.70, 0.25),
            "green": (0.20, 0.84, 0.29)}
@@ -155,10 +158,12 @@ class GreenlightApp(NSObject):
         active = cfg["bulb"]
         for i, name in enumerate(ORDER):
             if not self.enabled:
-                rgb = DISABLED
+                rgb, lit = DISABLED, False
             else:
                 lit = (name == active) and (self.blink_on or not cfg["blink"])
                 rgb = BULB_ON[name] if lit else OFF_LAMP
+            if lit:
+                self._draw_glow(CX[i], rgb)        # soft halo behind the lit lamp
             nscolor(rgb).set()
             rect = NSMakeRect(CX[i] - R, CY - R, 2 * R, 2 * R)
             NSBezierPath.bezierPathWithOvalInRect_(rect).fill()
@@ -170,6 +175,17 @@ class GreenlightApp(NSObject):
         img.addRepresentation_(rep)
         img.setTemplate_(False)
         return img
+
+    def _draw_glow(self, cx, rgb):
+        # Build a soft halo from a few translucent rings of the lamp colour,
+        # largest+faintest first so they stack into a smooth falloff. Cheaper and
+        # more reliable headless than NSShadow (which can no-op in a bitmap ctx).
+        for extra, alpha in GLOW_RINGS:
+            r = R + extra
+            NSColor.colorWithCalibratedRed_green_blue_alpha_(
+                rgb[0], rgb[1], rgb[2], alpha).set()
+            NSBezierPath.bezierPathWithOvalInRect_(
+                NSMakeRect(cx - r, CY - r, 2 * r, 2 * r)).fill()
 
     def _draw_wix(self):
         if self.wix is not None:
