@@ -6,7 +6,8 @@ Usage:  greenlight_hook.py <intent>
     waiting   -> blinking amber (Claude is waiting on you)
     idle      -> all dim
     stop      -> green, unless the final assistant message carries a
-                 negative verdict marker, then red.
+                 negative verdict marker (then red), or ends by asking the
+                 user a question (then blinking amber — waiting on you).
 
 Verdict marker (case-insensitive, anywhere in Claude's final message):
     green: GREENLIGHT: GO / GREEN / GOOD / PASS[ED] / OK[AY] / SUCCESS / DONE /
@@ -133,6 +134,22 @@ def last_assistant_text(transcript_path: str) -> str:
     return ""
 
 
+# A '?' that ends a sentence: followed by whitespace, closing markup, or EOL.
+# Excludes '?' inside URL query strings ("...?a=1"), where it's followed by text.
+QUESTION_RE = re.compile(r"\?(?=[\s)*_`\"'>\]]|$)")
+
+
+def ends_with_question(text: str) -> bool:
+    """True if Claude's final message hands back with a question — its last
+    non-empty line contains a sentence-ending '?'. That means 'your turn, I'm
+    waiting on you', so the light should blink amber rather than go green."""
+    for line in reversed(text.splitlines()):
+        s = line.strip()
+        if s:
+            return bool(QUESTION_RE.search(s))
+    return False
+
+
 def resolve_stop_state(hook_input: dict) -> str:
     path = hook_input.get("transcript_path", "")
     text = last_assistant_text(path) if path else ""
@@ -140,8 +157,11 @@ def resolve_stop_state(hook_input: dict) -> str:
     if matches:
         # Last marker wins, in case more than one appears in the message.
         token = matches[-1].lower().replace("_", "-").replace(" ", "-")
-        if token in NEGATIVE:
-            return "nogo"
+        return "nogo" if token in NEGATIVE else "go"
+    # No explicit verdict: if Claude signs off by asking the user something,
+    # it's waiting on them -> blink amber instead of going green.
+    if ends_with_question(text):
+        return "waiting"
     return "go"
 
 
