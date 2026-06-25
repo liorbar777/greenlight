@@ -11,7 +11,7 @@ file that the hook (greenlight_hook.py) writes:
     go       -> green   (finished OK / positive verdict)
     nogo     -> red     (negative verdict)
 
-Layout (left -> right):  [ Wix mark ] [ red  amber  green ] [ power toggle ]
+Layout (left -> right):  [ red  amber  green(Wix inside) ] [ power toggle ]
 
 The power toggle "unplugs" the light: it greys everything out (like a disabled
 IDE control) and stops reacting to Claude until you click it again. This
@@ -35,13 +35,13 @@ LOCK_FILE = os.path.join(BASE_DIR, "app.lock")
 WIX_IMG = os.path.join(BASE_DIR, "wix_white.png")   # white logo, if supplied
 
 # Geometry (horizontal)
-W, H = 220, 58
+W, H = 170, 58
 PAD = 6
 CYC = H // 2                       # vertical center for everything
 R = 12                             # bulb radius
-WIX_CX = 30                        # Wix mark center x
-BULB_CX = [82, 118, 154]           # red, amber, green centers (left -> right)
-BTN_CX, BTN_R = 196, 11            # power-button center x / radius
+BULB_CX = [30, 66, 102]            # red, amber, green centers (left -> right)
+GREEN_CX = BULB_CX[2]              # the Wix mark lives inside the green bulb
+BTN_CX, BTN_R = 146, 11            # power-button center x / radius
 
 # Colors
 HOUSING = "#161618"
@@ -141,17 +141,6 @@ class Greenlight:
         rounded_rect(c, PAD, PAD, W - PAD, H - PAD, 14,
                      fill=HOUSING, outline=HOUSING_EDGE, width=1)
 
-        # Wix mark — image if supplied, else a bold white placeholder.
-        if os.path.exists(WIX_IMG):
-            try:
-                self._wix_img = tk.PhotoImage(file=WIX_IMG)
-                c.create_image(WIX_CX, CYC, image=self._wix_img)
-            except Exception:
-                self._wix_img = None
-        if self._wix_img is None:
-            c.create_text(WIX_CX, CYC, text="Wix",
-                          font=("Helvetica", 17, "bold"), fill="#ffffff")
-
         # Bulbs (glow + bulb per position)
         self.glow_ids, self.bulb_ids = [], []
         for cx in BULB_CX:
@@ -161,6 +150,18 @@ class Greenlight:
                                  fill="#000000", outline="#000000", width=1)
             self.glow_ids.append(glow)
             self.bulb_ids.append(bulb)
+
+        # Wix mark INSIDE the green bulb (drawn last so it stays on top) —
+        # image if supplied, else a bold white placeholder.
+        if os.path.exists(WIX_IMG):
+            try:
+                self._wix_img = tk.PhotoImage(file=WIX_IMG)
+                c.create_image(GREEN_CX, CYC, image=self._wix_img)
+            except Exception:
+                self._wix_img = None
+        if self._wix_img is None:
+            c.create_text(GREEN_CX, CYC + 1, text="Wix",
+                          font=("Helvetica", 8, "bold"), fill="#ffffff")
 
         # Power toggle button (arc ring + stem)
         bx, by, br = BTN_CX, CYC, BTN_R
