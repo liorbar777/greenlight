@@ -37,7 +37,7 @@ A little traffic light pops into your menu bar. It **auto-starts at login** and 
 | ✨🔴 | **blinking red** | **your turn** — a question, a plan, or any approval prompt is waiting on you |
 | 🟢 | green | finished |
 
-It's a pure **status** light — orange while Claude works, green when it finishes, blinking red when it needs you. No error/verdict path.
+It's a pure **status** light — orange while Claude works, green when it finishes, blinking red when it needs you.
 
 Only the active lamp lights up — the others stay a calm gray. No tokens, no LLM calls, no network: it just reads a tiny state file the hooks write and redraws. 🪶
 
