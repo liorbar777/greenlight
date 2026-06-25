@@ -1,169 +1,101 @@
-# 🚦 Greenlight — a menu-bar traffic light for Claude Code
+<p align="center">
+  <img src="icon.png" width="128" alt="Greenlight">
+</p>
 
-**Stop babysitting the terminal.** Greenlight puts a tiny traffic light in your
-macOS menu bar that mirrors what Claude Code is doing — working, waiting on you,
-done, or stopped on a bad outcome — so you can look away, do other work, and
-glance up only when the colour changes. No tokens, no LLM calls, no network: it
-just reads a tiny state file Claude Code's hooks write, and redraws.
+<h1 align="center">🚦 Greenlight</h1>
 
-A native macOS **menu-bar** item (`NSStatusItem`, via PyObjC) that sits beside
-your system icons. Click it for a menu (Enable/Disable, Quit).
+<p align="center">
+  <b>A tiny traffic light in your menu bar that shows what Claude Code is doing.</b><br>
+  Working? Waiting on you? Done? Just glance up — stop babysitting the terminal.
+</p>
 
-**Claude Code only** — hooks are wired into `~/.claude/settings.json`. Cursor
-agent sessions do not update the light (unless you add similar hooks yourself).
+<p align="center">
+  <img src="https://img.shields.io/badge/macOS-10.13%2B-black?logo=apple&logoColor=white" alt="macOS 10.13+">
+  <img src="https://img.shields.io/badge/runs%20on-Apple%20Silicon%20%26%20Intel-brightgreen" alt="Apple Silicon & Intel">
+  <img src="https://img.shields.io/badge/tokens-0-informational" alt="0 tokens">
+  <img src="https://img.shields.io/badge/network-none-blueviolet" alt="no network">
+</p>
 
-## Install (no clone needed)
+---
+
+## ✨ Install — one line
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/liorbar777/greenlight/main/install.sh | bash
 ```
 
-This downloads the app into `~/Library/Application Support/Greenlight`, builds a
-PyObjC venv, creates **`Greenlight.app`** in your Applications folder (and
-Launchpad), wires the Claude Code hooks, and installs a login LaunchAgent. The
-light appears in your menu bar right away.
+A little traffic light pops into your menu bar. It **auto-starts at login** and adds **Greenlight.app** to your Applications. Done. 🎉
 
-### Install from a clone
+<sub>Prefer a clone? `git clone https://github.com/liorbar777/greenlight.git && cd greenlight && ./install.sh`</sub>
 
-```bash
-git clone https://github.com/liorbar777/greenlight.git
-cd greenlight
-./install.sh        # builds venv + PyObjC, the .app, wires hooks, installs the LaunchAgent
-```
+## 🎨 What the colors mean
 
-Re-run any time (idempotent). To remove: `./uninstall.sh` (or
-`~/Library/Application\ Support/Greenlight/uninstall.sh` after a clone-free install).
-Need a specific Python to build the venv? `GREENLIGHT_PY=/path/to/python3 ./install.sh`.
+| | State | What's up |
+|---|---|---|
+| ⚪ | gray | idle — nothing running |
+| 🟡 | amber | Claude is working / thinking |
+| ✨🟡 | **blinking amber** | **your turn** — a question or plan approval is waiting |
+| 🟢 | green | finished, all good |
+| 🔴 | red | finished on a bad note (a no-go verdict) |
 
-## Requirements
+Only the active lamp lights up — the others stay a calm gray. No tokens, no LLM calls, no network: it just reads a tiny state file the hooks write and redraws. 🪶
 
-- **macOS 10.13+** (Big Sur 11+ recommended), **Apple Silicon or Intel** — the
-  installer builds the PyObjC venv fresh on each machine, so it matches your CPU.
-- **A `python3`** to build that venv. macOS no longer ships one by default, so
-  install Xcode Command Line Tools (`xcode-select --install`) or Homebrew Python
-  (`brew install python`). The installer searches PATH, `/opt/homebrew` (Apple
-  Silicon), `/usr/local` (Intel), and `/usr/bin`.
-- **Claude Code** (the hooks integrate with it).
+## 🟢🔴 Green or red when it finishes
 
-## States
-
-| Lamp | Meaning | Hook that triggers it |
-|------|---------|-----------------------|
-| ⚪ all gray | idle / no active turn | `SessionStart` |
-| 🟡 solid amber | Claude is working / thinking | `UserPromptSubmit`, `PreToolUse`, `PostToolUse` |
-| 🟡 blinking amber | Claude is **waiting on you** (a question / plan approval) | `PreToolUse` (AskUserQuestion / ExitPlanMode) |
-| 🟢 green (Wix mark shown) | finished OK, or a positive verdict | `Stop` |
-| 🔴 red | a negative go/no-go verdict | `Stop` |
-
-Only the active lamp is coloured; the other two are light gray.
-
-The **Wix mark** is drawn inside the green lamp only while the light is green.
-Supply `wix_white.png` (white logo, transparent bg) in this folder and it
-replaces the placeholder "W"; otherwise a bold white "W" is drawn.
-
-## Getting a red / green verdict
-
-By default every finished turn is **green**. The `Stop` hook turns the
-light **red** only if Claude's final message contains a marker:
-
-```
-GREENLIGHT: NO-GO  -> red    (also: RED, FAIL[ED]/FAILURE, BAD, BLOCK[ED], STOP[PED], ERROR, REJECT[ED], ABORT[ED])
-GREENLIGHT: GO     -> green  (also: GREEN, GOOD, PASS[ED], OK[AY], SUCCESS, DONE, SHIP[PED], APPROVED, LGTM; green is the default anyway)
-```
-
-The marker can appear anywhere in the final message and is case-insensitive.
-
-**Auto-red:** add a standing rule to `~/.claude/CLAUDE.md`:
+Every finished turn is **green** by default. Want Claude to flag bad outcomes in **red** on its own? Add this to `~/.claude/CLAUDE.md`:
 
 ```markdown
-## Greenlight Verdict Marker
-
-At the end of every turn, if the outcome is bad — negative verdict, failed
-tests/build, blocked or incomplete task, unresolved error, or flagged risk —
-append a final line:
-
-    GREENLIGHT: NO-GO — <one-line reason>
-
-Good turns emit nothing (the light stays green). You can also ask Claude to
-"end with a GREENLIGHT verdict" explicitly.
+## 🚦 Greenlight Verdict Marker
+End your final message with `GREENLIGHT: NO-GO — <reason>` only when a turn ends
+badly (failing tests, blocked task, unresolved error, a real risk). Otherwise emit nothing.
 ```
 
-## Controls
+You can also drop a marker yourself anywhere in a reply (case-insensitive):
 
-- **Click the menu-bar icon** → menu with **Enabled** (toggle; greys the light
-  out / "unplugs" it), **Hide Icon** (removes the dot but keeps running — click
-  the app icon to bring it back), and **Quit Greenlight**.
-- **Applications / Launchpad:** launch **Greenlight** like any app. Clicking it
-  while it's already running does nothing (it won't restart or duplicate).
-- Manual control: `./greenlight.sh {start|stop|restart|status}`
+- 🟢 `GREENLIGHT: GO` — also `GREEN` `GOOD` `PASS` `OK` `SUCCESS` `DONE` `SHIP` `APPROVED` `LGTM`
+- 🔴 `GREENLIGHT: NO-GO` — also `RED` `FAIL` `BAD` `BLOCK` `STOP` `ERROR` `REJECT` `ABORT`
 
-## Files
+## 🎛️ Controls
 
-| File | Role |
-|------|------|
-| `greenlight_app.py` | the menu-bar app (PyObjC `NSStatusItem`); polls `state.json` |
-| `greenlight_hook.py` | called by Claude Code hooks; writes `state.json`, parses verdicts, ensures the app is running |
-| `greenlight.sh` | manual control: `start` / `stop` / `restart` / `status` (launchd-aware) |
-| `install.sh` / `uninstall.sh` | set up / tear down venv, hooks, LaunchAgent |
-| `requirements.txt` | `pyobjc-framework-Cocoa` |
-| `.venv/` | virtualenv with PyObjC (gitignored; created by install) |
-| `state.json` | current state (written by the hook; gitignored) |
-| `config.json` | persisted enabled/disabled choice (gitignored) |
-| `app.pid` / `app.lock` / `app.log` | process id / single-instance lock / log (gitignored) |
+Click the light for a little menu:
 
-## How it's wired
+- **Enabled** — grey it out / "unplug" it
+- **Hide Icon** — tuck it away (click the app icon any time to bring it back)
+- **Quit Greenlight**
 
-Hooks in `~/.claude/settings.json` call `greenlight_hook.py` with an intent on
-each event (run by the install's venv Python — it only writes `state.json`).
-The hook ensures the app is running (via `launchctl kickstart`, else a detached
-spawn). The menu-bar app polls `state.json` and redraws. Code, venv, and runtime
-files all live in `~/Library/Application Support/Greenlight`.
+Clicking the app icon while it's already running does nothing — no restart, no duplicate icons. 👍
 
-A backup of the pre-Greenlight settings is at
-`~/.claude/settings.json.bak.greenlight`.
+## 🧰 What you need
 
-## Auto-start at login (LaunchAgent)
+- **macOS 10.13+**, Apple Silicon **or** Intel — the installer builds for your Mac.
+- **A `python3`** (to build the tiny PyObjC venv). Don't have one? `xcode-select --install` or `brew install python`.
+- **Claude Code** — that's what the light is watching. 🤖
 
-A LaunchAgent at `~/Library/LaunchAgents/com.greenlight.menubar.plist` runs the
-app **directly** (`python greenlight_app.py`) at login and relaunches it on
-crash. (Launching via the `.app` bundle is avoided here — a bundle `exec python`
-launch leaves the menu-bar item invisible; a plain process draws it correctly.
-The `.app` icon just kickstarts this agent.) A clean Quit is respected — not
-relaunched until next login. `greenlight.sh` is launchd-aware.
+## 🔧 How it works
 
-If the icon is missing after login, run `./greenlight.sh start` or
-`./install.sh`. Claude Code hooks will also start the app on the next session
-even when launchd is unloaded.
+Claude Code hooks → write a small `state.json` → the menu-bar app polls it and repaints. Everything lives in `~/Library/Application Support/Greenlight` and never leaves your machine.
 
-## Troubleshooting
+> 💚 The green lamp shows a little logo. Drop a `wix_white.png` (white, transparent) next to the app to use your own.
 
-- **Icon missing entirely** — make sure it's launched as a plain process, not via
-  the `.app` bundle's `exec` (the installer's LaunchAgent does this). `./greenlight.sh
-  start` or re-running `./install.sh` fixes it.
-- **Two traffic-light icons** — only one instance should run (`flock` lock).
-  Run `./greenlight.sh stop && ./greenlight.sh start` to reset.
-- **Light stopped updating** — re-run `./install.sh` to repoint hook paths if
-  you moved the install or upgraded Python.
+## 👋 Uninstall
 
-## Removing it
+```bash
+~/Library/Application\ Support/Greenlight/uninstall.sh
+```
 
-Run `./uninstall.sh` (removes the LaunchAgent + hook groups), then optionally
-`rm -rf` this folder and delete the "Greenlight Verdict Marker" section from
-`~/.claude/CLAUDE.md`.
+Removes the menu-bar app, the login agent, the hooks, and `Greenlight.app`.
 
-## Notes / limitations
+<details>
+<summary>🤓 Nerdy notes & troubleshooting</summary>
 
-- **Tool-permission prompts ("Allow this command?") do not blink** — they stay
-  solid amber. Blinking relies on Claude Code's `Notification` hook, which (at
-  least in this setup) does not fire for permission prompts — verified with a
-  34-second open prompt that produced zero `Notification` events. Only
-  `AskUserQuestion` / `ExitPlanMode` (which ride `PreToolUse`) blink. There is
-  no hook-based way to distinguish "waiting on a permission prompt" from "a tool
-  is running", so solid amber is the honest signal for both.
-- One light is shared across all Claude Code sessions; concurrent sessions will
-  fight over the state. Fine for a single active session.
-- **Hook Python path is written at install time** into `~/.claude/settings.json`.
-  If that interpreter is removed, hooks silently no-op (Claude keeps working,
-  the light just stops updating). Re-run `./install.sh` to repoint.
-- Single instance is enforced via `app.lock` (`flock`); duplicate launches exit
-  immediately.
+- **It launches as a plain process, not via the `.app`'s `exec`.** A bundle `exec python` launch leaves the macOS status item *invisible*; a plain process draws it. The LaunchAgent runs the script directly; the `.app` icon just kickstarts that agent.
+- **Permission prompts ("Allow this command?") don't blink** — they stay solid amber. Claude Code doesn't fire a `Notification` hook for them, and there's no way to tell "waiting on a permission prompt" from "a tool is running." `AskUserQuestion` / `ExitPlanMode` *do* blink.
+- **One light per machine** — it's shared across Claude Code sessions; concurrent sessions fight over the state. Fine for one active session.
+- **Icon missing?** Run `~/Library/Application\ Support/Greenlight/greenlight.sh start`, or re-run the installer.
+- **Light stopped updating?** Re-run the installer to repoint the hook (e.g. after upgrading Python).
+- **Files:** `greenlight_app.py` (the menu-bar app), `greenlight_hook.py` (writes state + reads verdicts), `greenlight.sh` (start/stop/restart/status), `install.sh` / `uninstall.sh`, `make_icon.py` + `build_icns.sh` (regenerate the icon).
+- A backup of your pre-Greenlight settings is saved to `~/.claude/settings.json.bak.greenlight`.
+
+</details>
+
+<p align="center"><sub>Made with 🚦 for Claude Code.</sub></p>
