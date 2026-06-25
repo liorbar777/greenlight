@@ -32,7 +32,7 @@ A little traffic light pops into your menu bar. It **auto-starts at login** and 
 
 | | State | What's up |
 |---|---|---|
-| ⚪ | gray | idle — nothing running |
+| ⚪ | gray | idle — nothing running, or you've disabled it from the menu |
 | 🟠 | orange | Claude is working / thinking |
 | ✨🟠 | **blinking orange** | **your turn** — a question, a plan, or any approval prompt is waiting on you |
 | 🟢 | green | finished, all good |
