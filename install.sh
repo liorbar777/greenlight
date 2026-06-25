@@ -182,4 +182,4 @@ fi
 echo "==> Done."
 echo "    • Menu-bar light: should now be beside your system icons."
 echo "    • App: $BUNDLE (Applications / Launchpad)."
-echo "    • Auto red/green: add the 'Greenlight Verdict Marker' rule to ~/.claude/CLAUDE.md (see README)."
+echo "    • Status light: orange = working, blinking red = waiting on you, green = finished."
