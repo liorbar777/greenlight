@@ -35,6 +35,16 @@ Re-run any time (idempotent). To remove: `./uninstall.sh` (or
 `~/Library/Application\ Support/Greenlight/uninstall.sh` after a clone-free install).
 Need a specific Python to build the venv? `GREENLIGHT_PY=/path/to/python3 ./install.sh`.
 
+## Requirements
+
+- **macOS 10.13+** (Big Sur 11+ recommended), **Apple Silicon or Intel** — the
+  installer builds the PyObjC venv fresh on each machine, so it matches your CPU.
+- **A `python3`** to build that venv. macOS no longer ships one by default, so
+  install Xcode Command Line Tools (`xcode-select --install`) or Homebrew Python
+  (`brew install python`). The installer searches PATH, `/opt/homebrew` (Apple
+  Silicon), `/usr/local` (Intel), and `/usr/bin`.
+- **Claude Code** (the hooks integrate with it).
+
 ## States
 
 | Lamp | Meaning | Hook that triggers it |

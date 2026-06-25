@@ -48,11 +48,22 @@ chmod +x "$APP_DIR/greenlight.sh" "$APP_DIR/uninstall.sh" 2>/dev/null || true
 # ---- 2. build the venv (any python3 bootstraps it; everything else uses venv) -
 BOOT_PY="${GREENLIGHT_PY:-}"
 if [ -z "$BOOT_PY" ]; then
-  for c in python3.11 python3 /usr/bin/python3; do
-    if command -v "$c" >/dev/null 2>&1 && "$c" -c 'pass' 2>/dev/null; then BOOT_PY="$(command -v "$c")"; break; fi
+  # Search PATH names and both arches' Homebrew prefixes (/opt/homebrew = Apple
+  # Silicon, /usr/local = Intel) plus the system Python. Needs the venv module.
+  for c in python3 python3.13 python3.12 python3.11 \
+           /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
+    if p="$(command -v "$c" 2>/dev/null)" && "$p" -c 'import venv' 2>/dev/null; then
+      BOOT_PY="$p"; break
+    fi
   done
 fi
-[ -n "$BOOT_PY" ] || { echo "ERROR: no working python3 found. Install one or set GREENLIGHT_PY=/path/to/python3."; exit 1; }
+if [ -z "$BOOT_PY" ]; then
+  echo "ERROR: no usable python3 found to build the venv. Install one of:"
+  echo "    • Xcode Command Line Tools:  xcode-select --install"
+  echo "    • Homebrew Python:           brew install python"
+  echo "  then re-run, or pass GREENLIGHT_PY=/path/to/python3 ./install.sh"
+  exit 1
+fi
 
 VENV="$APP_DIR/.venv"
 APP_PY="$VENV/bin/python"
@@ -85,7 +96,7 @@ cat > "$BUNDLE/Contents/Info.plist" <<PLISTEOF
     <key>CFBundleVersion</key><string>1.0</string>
     <key>CFBundleShortVersionString</key><string>1.0</string>
     <key>LSUIElement</key><true/>
-    <key>LSMinimumSystemVersion</key><string>11.0</string>
+    <key>LSMinimumSystemVersion</key><string>10.13</string>
     $( [ -f "$APP_DIR/icon.icns" ] && echo '<key>CFBundleIconFile</key><string>icon</string>' )
 </dict>
 </plist>
@@ -159,9 +170,14 @@ PLISTEOF
 
 echo "==> (Re)loading LaunchAgent"
 launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true
-launchctl bootstrap "$DOMAIN" "$PLIST"
-launchctl enable "$DOMAIN/$LABEL"
-launchctl kickstart "$DOMAIN/$LABEL" 2>/dev/null || true
+if launchctl bootstrap "$DOMAIN" "$PLIST" 2>/dev/null; then
+  launchctl enable "$DOMAIN/$LABEL" 2>/dev/null || true
+  launchctl kickstart "$DOMAIN/$LABEL" 2>/dev/null || true
+else
+  # Older macOS without the modern launchctl verbs.
+  launchctl unload "$PLIST" 2>/dev/null || true
+  launchctl load -w "$PLIST" 2>/dev/null || true
+fi
 
 echo "==> Done."
 echo "    • Menu-bar light: should now be beside your system icons."
