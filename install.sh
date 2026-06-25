@@ -106,10 +106,9 @@ cat > "$BUNDLE/Contents/MacOS/Greenlight" <<LAUNCHEOF
 #!/bin/bash
 # Greenlight.app launcher. A bundle 'exec python' launch leaves the menu-bar
 # item invisible, so we don't run python here. Behaviour:
-#   • already running  -> do nothing (just un-hide if it was hidden); NO restart
+#   • already running  -> do nothing (no restart, no duplicate icon)
 #   • not running      -> start the launchd agent (plain process draws correctly)
 if pgrep -f greenlight_app.py >/dev/null 2>&1; then
-  printf '{"visible": true}' > "$APP_DIR/control.json"
   exit 0
 fi
 launchctl kickstart "gui/\$(id -u)/$LABEL" 2>/dev/null || nohup "$APP_PY" "$APP" >/dev/null 2>&1 &

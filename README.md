@@ -60,7 +60,6 @@ You can also drop a marker yourself anywhere in a reply (case-insensitive):
 Click the light for a little menu:
 
 - **Enabled** — grey it out / "unplug" it
-- **Hide Icon** — tuck it away (click the app icon any time to bring it back)
 - **Quit Greenlight**
 
 Clicking the app icon while it's already running does nothing — no restart, no duplicate icons. 👍
