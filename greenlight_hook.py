@@ -23,6 +23,7 @@ import subprocess
 import sys
 
 PY = "/Users/liorbar/.local/share/uv/python/cpython-3.11.14-macos-aarch64-none/bin/python3.11"
+LAUNCHD_LABEL = "com.liorbar.greenlight"
 HOME = os.path.expanduser("~")
 BASE_DIR = os.path.join(HOME, "Documents", "all_projects", "greenlight")
 STATE_FILE = os.path.join(BASE_DIR, "state.json")
@@ -59,6 +60,22 @@ def app_running() -> bool:
 def ensure_app() -> None:
     if app_running() or not os.path.exists(APP):
         return
+    # Prefer launchd so it owns the lifecycle (and restarts the light on crash).
+    # Falls back to a detached spawn if the LaunchAgent isn't loaded.
+    target = f"gui/{os.getuid()}/{LAUNCHD_LABEL}"
+    try:
+        loaded = subprocess.run(
+            ["launchctl", "print", target],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        ).returncode == 0
+        if loaded:
+            subprocess.run(
+                ["launchctl", "kickstart", target],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            return
+    except Exception:
+        pass
     try:
         with open(LOG, "a") as log:
             subprocess.Popen(
