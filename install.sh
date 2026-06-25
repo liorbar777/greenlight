@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Greenlight installer. Works two ways:
-#   • Clone-free:  curl -fsSL https://raw.githubusercontent.com/liorbar777/greenlight/main/install.sh | bash
+#   • Clone-free:  curl -fsSL https://raw.githubusercontent.com/liorbar777/greenlight/master/install.sh | bash
 #   • From a clone: ./install.sh
 #
 # It installs the runtime to ~/Library/Application Support/Greenlight, builds a
@@ -10,9 +10,9 @@
 set -euo pipefail
 
 # ---- where the app is hosted (for the clone-free path) ----------------------
-# Override with: GREENLIGHT_REPO=you/greenlight GREENLIGHT_REF=main curl ... | bash
+# Override with: GREENLIGHT_REPO=you/greenlight GREENLIGHT_REF=master curl ... | bash
 REPO="${GREENLIGHT_REPO:-liorbar777/greenlight}"     # <-- GitHub owner/repo
-REF="${GREENLIGHT_REF:-main}"                    # branch or tag
+REF="${GREENLIGHT_REF:-master}"                    # branch or tag
 RAW="https://raw.githubusercontent.com/$REPO/$REF"
 
 # ---- install locations ------------------------------------------------------

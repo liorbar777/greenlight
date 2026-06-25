@@ -21,7 +21,7 @@
 ## ✨ Install — one line
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/liorbar777/greenlight/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/liorbar777/greenlight/master/install.sh | bash
 ```
 
 A little traffic light pops into your menu bar. It **auto-starts at login** and adds **Greenlight.app** to your Applications. Done. 🎉
