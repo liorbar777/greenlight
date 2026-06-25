@@ -50,13 +50,13 @@ WIX_IMG = os.path.join(CODE_DIR, "wix_white.png")
 # Icon geometry (points)
 # Menu-bar item: the full horizontal 3-lamp traffic light.
 IW, IH = 84, 24
-R = 8                       # smaller lamp leaves room for the glow inside 24px
+R = 10                      # lamp size; glow rings stay tight so they fit 24px
 CY = IH / 2.0
 CX = [16, 42, 68]          # red, amber, green centres
 GREEN_CX = CX[2]
 # Soft halo drawn behind the lit lamp only: (extra radius, alpha), faint+large first.
-# Max extra (4) keeps the glow within the 24px height (CY 12 ± R+4 = 0..24).
-GLOW_RINGS = ((4.0, 0.12), (2.5, 0.18), (1.0, 0.28))
+# Kept tight (max +3.5) so R+extra ≈ 13.5 only just kisses the 24px edges.
+GLOW_RINGS = ((3.5, 0.13), (2.0, 0.20), (0.8, 0.30))
 
 BULB_ON = {"red": (1.00, 0.27, 0.23), "amber": (1.00, 0.70, 0.25),
            "green": (0.20, 0.84, 0.29)}
