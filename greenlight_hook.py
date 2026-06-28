@@ -18,6 +18,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 LAUNCHD_LABEL = "com.greenlight.menubar"
 CODE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -43,12 +44,31 @@ SAFE_READONLY_TOOLS = {
     "TodoWrite", "WebFetch", "WebSearch", "Task",
 }
 
+# Minimum time (seconds) a red "waiting" blink is protected from being downgraded
+# to "working". Tools dispatched in one turn fire their hooks within milliseconds
+# and all race to write this single state file (last write wins). Without a floor,
+# a sibling tool's "working" can overwrite a "waiting" before the menu-bar app's
+# ~0.15s poll ever samples it -> the MCP/approval blink is silently lost. The app
+# blinks at 0.45s, so ~1s guarantees at least one full visible on/off cycle.
+MIN_WAIT_HOLD = 1.0
 
-def write_state(state: str) -> None:
+
+def read_state() -> dict:
+    try:
+        with open(STATE_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def write_state(state: str, hold_until: float = None) -> None:
     os.makedirs(RUNTIME_DIR, exist_ok=True)
+    payload = {"state": state}
+    if hold_until is not None:
+        payload["hold_until"] = hold_until      # app ignores unknown keys
     tmp = STATE_FILE + ".tmp"
     with open(tmp, "w") as f:
-        json.dump({"state": state}, f)
+        json.dump(payload, f)
     os.replace(tmp, STATE_FILE)
 
 
@@ -233,8 +253,22 @@ def main() -> None:
     else:
         state = "idle"
 
+    # Protect a fresh "waiting" blink from a near-simultaneous sibling's "working"
+    # (see MIN_WAIT_HOLD). Only "working" is held back; waiting/go/idle still take
+    # effect at once — a finished turn must go green immediately. If a working is
+    # held, we leave the file untouched (no mtime change) so the app keeps blinking;
+    # the next non-held event (the slow tool's own PostToolUse, or Stop->green)
+    # transitions it normally.
+    now = time.time()
+    if state == "working":
+        cur = read_state()
+        if cur.get("state") == "waiting" and now < cur.get("hold_until", 0):
+            ensure_app()
+            sys.exit(0)
+    hold_until = now + MIN_WAIT_HOLD if state == "waiting" else None
+
     try:
-        write_state(state)
+        write_state(state, hold_until)
         ensure_app()
     except Exception:
         pass
