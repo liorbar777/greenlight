@@ -36,6 +36,12 @@ ALWAYS_PROMPTS = {"AskUserQuestion", "ExitPlanMode"}
 # defaultMode values under which a tool runs without ever prompting.
 BLANKET_APPROVE_MODES = {"bypassPermissions"}
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+# Read-only tools Claude Code auto-approves WITHOUT an allow-rule, so they never
+# pop a prompt. Listing them keeps the light solid (no ~1s flash per tool call).
+SAFE_READONLY_TOOLS = {
+    "Read", "Glob", "Grep", "LS", "NotebookRead",
+    "TodoWrite", "WebFetch", "WebSearch", "Task",
+}
 
 
 def write_state(state: str) -> None:
@@ -141,14 +147,19 @@ def _rule_allows(rule: str, tool: str, tool_input: dict) -> bool:
     return False
 
 
-def tool_will_prompt(tool: str, tool_input: dict, cwd: str) -> bool:
+def tool_will_prompt(tool: str, tool_input: dict, cwd: str, mode: str = "") -> bool:
     """True if calling `tool` will pop an approve/deny prompt — i.e. it isn't
     already covered by an allow rule (and we're not in a blanket-approve mode).
     Lets us blink the light *before* the user has to click. On ANY uncertainty
     we return False (stay solid): a missed blink is friendlier than a light that
-    blinks through routine auto-approved work."""
+    blinks through routine auto-approved work.
+
+    `mode` is the LIVE permission mode from the hook payload; it wins over the
+    static `defaultMode` in settings.json (which doesn't reflect the in-session
+    plan/acceptEdits/bypass toggle)."""
     try:
-        allow, mode = _load_permissions(cwd)
+        allow, settings_mode = _load_permissions(cwd)
+        mode = mode or settings_mode
         if mode in BLANKET_APPROVE_MODES:
             return False
         if mode == "acceptEdits" and tool in EDIT_TOOLS:
@@ -180,14 +191,28 @@ def main() -> None:
         # Pure status light: a finished turn is always green, no verdict parsing.
         state = "go"
     elif intent == "pretool":
-        # Blink when the user is about to be asked to act: tools that always
-        # prompt, plus any tool that isn't pre-approved (so an approve/deny
-        # dialog will pop and block right after this hook). Notification doesn't
-        # fire for prompts here, so PreToolUse is our only pre-prompt signal.
+        # Blink ONLY when the user is about to be asked to act. Order matters:
+        #   1. tools that ALWAYS prompt (AskUserQuestion / ExitPlanMode) -> blink,
+        #      even in plan mode (ExitPlanMode IS the plan-approval wait).
+        #   2. plan mode -> reads are auto-approved and edits are BLOCKED (never
+        #      prompted), so nothing else here will prompt -> stay solid.
+        #   3. known read-only tools -> auto-approved, no prompt -> stay solid
+        #      (kills the ~1s red flash on routine Read/Grep/etc.).
+        #   4. otherwise fall back to the allow-rule heuristic.
+        # The live permission mode comes from the hook payload (`permission_mode`);
+        # the static defaultMode in settings.json does NOT reflect the plan toggle.
         # PostToolUse flips back to solid amber once the tool actually runs.
         tool = hook_input.get("tool_name", "")
-        if tool in ALWAYS_PROMPTS or tool_will_prompt(
-                tool, hook_input.get("tool_input", {}), hook_input.get("cwd", "")):
+        pmode = hook_input.get("permission_mode") or ""
+        if tool in ALWAYS_PROMPTS:
+            state = "waiting"
+        elif pmode == "plan":
+            state = "working"
+        elif tool in SAFE_READONLY_TOOLS:
+            state = "working"
+        elif tool_will_prompt(
+                tool, hook_input.get("tool_input", {}),
+                hook_input.get("cwd", ""), pmode):
             state = "waiting"
         else:
             state = "working"
