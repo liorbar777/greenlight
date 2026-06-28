@@ -166,10 +166,12 @@ def main() -> None:
         hook_input = {}
 
     # React to Claude Code ONLY. Other agents (e.g. Cursor's built-in chat) also
-    # run ~/.claude hooks, but their transcript lives under ~/.cursor/ instead of
-    # ~/.claude/. Ignore anything that isn't a Claude Code transcript.
+    # run ~/.claude hooks, but their payload either omits transcript_path or roots
+    # it under ~/.cursor/ instead of ~/.claude/. Allowlist, don't blocklist: only
+    # proceed when we can positively confirm a Claude Code transcript. An empty or
+    # foreign transcript_path means it isn't us -> stay out.
     tp = hook_input.get("transcript_path") or ""
-    if tp and "/.claude/" not in tp:
+    if "/.claude/" not in tp:
         sys.exit(0)
 
     if intent == "stop":
