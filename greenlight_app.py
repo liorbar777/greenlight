@@ -1,0 +1,295 @@
+#!/usr/bin/env python3
+"""Greenlight — a menu-bar traffic light for Claude Code.
+
+A native macOS status-bar item (NSStatusItem) that sits beside the system
+icons. It draws a mini horizontal 3-lamp traffic light reflecting Claude
+Code's state, read from a small JSON file the hook writes:
+
+    idle     -> all lamps dim
+    working  -> solid amber  (Claude is working)
+    waiting  -> blinking red (Claude is waiting on you)
+    go       -> green        (finished; Wix mark shown)
+
+It's a pure status light: no error/verdict path — a finished turn is always green.
+
+Click the icon for a menu: Enable/Disable (greys it out, persisted) and Quit.
+
+Needs PyObjC (pyobjc-framework-Cocoa); run with the project's .venv python.
+"""
+import fcntl
+import json
+import os
+import sys
+import time
+import traceback
+
+import objc
+from AppKit import (
+    NSApplication, NSApplicationActivationPolicyAccessory, NSStatusBar,
+    NSVariableStatusItemLength, NSImage, NSColor, NSBezierPath, NSMenu,
+    NSMenuItem, NSFont, NSFontAttributeName, NSForegroundColorAttributeName,
+    NSBitmapImageRep, NSGraphicsContext, NSDeviceRGBColorSpace,
+)
+from Foundation import (
+    NSObject, NSTimer, NSMakeRect, NSMakeSize, NSMakePoint, NSString,
+)
+
+# Code lives wherever this file is; runtime (lock/state/config/pid) is pinned to
+# ONE canonical dir so any copy of the app shares a single lock -> single instance.
+# Override with GREENLIGHT_DIR (e.g. for isolated dev).
+CODE_DIR = os.path.dirname(os.path.abspath(__file__))
+RUNTIME_DIR = os.environ.get("GREENLIGHT_DIR") or os.path.expanduser(
+    "~/Library/Application Support/Greenlight")
+os.makedirs(RUNTIME_DIR, exist_ok=True)
+STATE_FILE = os.path.join(RUNTIME_DIR, "state.json")
+CONFIG_FILE = os.path.join(RUNTIME_DIR, "config.json")
+PID_FILE = os.path.join(RUNTIME_DIR, "app.pid")
+LOCK_FILE = os.path.join(RUNTIME_DIR, "app.lock")
+WIX_IMG = os.path.join(CODE_DIR, "wix_white.png")
+
+# Icon geometry (points)
+# Menu-bar item: the full horizontal 3-lamp traffic light.
+IW, IH = 84, 24
+R = 10                      # lamp size; glow rings stay tight so they fit 24px
+CY = IH / 2.0
+CX = [16, 42, 68]          # red, amber, green centres
+GREEN_CX = CX[2]
+# Soft halo drawn behind the lit lamp only: (extra radius, alpha), faint+large first.
+# Kept tight (max +3.5) so R+extra ≈ 13.5 only just kisses the 24px edges.
+GLOW_RINGS = ((3.5, 0.13), (2.0, 0.20), (0.8, 0.30))
+
+BULB_ON = {"red": (1.00, 0.27, 0.23), "amber": (1.00, 0.70, 0.25),
+           "green": (0.20, 0.84, 0.29)}
+DISABLED = (0.42, 0.42, 0.44)
+OFF_LAMP = (0.60, 0.60, 0.63)   # inactive lamp = light gray (only the lit one is coloured)
+
+STATE_MAP = {
+    "idle":    {"bulb": None,    "blink": False},
+    "working": {"bulb": "amber", "blink": False},
+    "waiting": {"bulb": "red",   "blink": True},
+    "go":      {"bulb": "green", "blink": False},
+}
+ORDER = ["red", "amber", "green"]
+
+
+def read_json(path, default):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+
+def nscolor(rgb):
+    return NSColor.colorWithCalibratedRed_green_blue_alpha_(rgb[0], rgb[1], rgb[2], 1.0)
+
+
+class GreenlightApp(NSObject):
+    def init(self):
+        self = objc.super(GreenlightApp, self).init()
+        if self is None:
+            return None
+        self.state = "idle"
+        cfg = read_json(CONFIG_FILE, {})
+        self.enabled = bool(cfg.get("enabled", True))
+        self.blink_on = True
+        self.mtime = 0
+        self.wix = None
+        if os.path.exists(WIX_IMG):
+            img = NSImage.alloc().initWithContentsOfFile_(WIX_IMG)
+            if img is not None:
+                self.wix = img
+        return self
+
+    # ---- app delegate ----
+    def applicationDidFinishLaunching_(self, notification):
+        # Status item is created in main() BEFORE the run loop — creating it here
+        # (after the app finishes launching) leaves it invisible. Nothing to do.
+        pass
+
+    # ---- setup ----
+    def build(self):
+        self.item = NSStatusBar.systemStatusBar().statusItemWithLength_(
+            NSVariableStatusItemLength)
+
+        menu = NSMenu.alloc().init()
+        self.toggle_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Enabled", "toggleEnabled:", "")
+        self.toggle_item.setTarget_(self)
+        self.toggle_item.setState_(1 if self.enabled else 0)
+        menu.addItem_(self.toggle_item)
+        menu.addItem_(NSMenuItem.separatorItem())
+        quit_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Quit Greenlight", "quit:", "q")
+        quit_item.setTarget_(self)
+        menu.addItem_(quit_item)
+        self.item.setMenu_(menu)
+
+        self.redraw()
+        self.poll_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            0.15, self, "poll:", None, True)
+        self.blink_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            0.45, self, "blink:", None, True)
+
+    # ---- drawing ----
+    def make_image(self):
+        # Render into an offscreen bitmap (NOT lockFocus): lockFocus draws nothing
+        # when the app runs as a background agent with no window/screen focus, which
+        # left the menu-bar item blank/invisible. A bitmap context works headless.
+        rep = NSBitmapImageRep.alloc().initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel_(
+            None, IW, IH, 8, 4, True, False, NSDeviceRGBColorSpace, 0, 0)
+        ctx = NSGraphicsContext.graphicsContextWithBitmapImageRep_(rep)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.setCurrentContext_(ctx)
+
+        cfg = STATE_MAP.get(self.state, STATE_MAP["idle"])
+        active = cfg["bulb"]
+        for i, name in enumerate(ORDER):
+            if not self.enabled:
+                rgb, lit = DISABLED, False
+            else:
+                lit = (name == active) and (self.blink_on or not cfg["blink"])
+                rgb = BULB_ON[name] if lit else OFF_LAMP
+            if lit:
+                self._draw_glow(CX[i], rgb)        # soft halo behind the lit lamp
+            nscolor(rgb).set()
+            rect = NSMakeRect(CX[i] - R, CY - R, 2 * R, 2 * R)
+            NSBezierPath.bezierPathWithOvalInRect_(rect).fill()
+        if self.enabled and self.state == "go":
+            self._draw_wix()
+
+        NSGraphicsContext.restoreGraphicsState()
+        img = NSImage.alloc().initWithSize_(NSMakeSize(IW, IH))
+        img.addRepresentation_(rep)
+        img.setTemplate_(False)
+        return img
+
+    def _draw_glow(self, cx, rgb):
+        # Build a soft halo from a few translucent rings of the lamp colour,
+        # largest+faintest first so they stack into a smooth falloff. Cheaper and
+        # more reliable headless than NSShadow (which can no-op in a bitmap ctx).
+        for extra, alpha in GLOW_RINGS:
+            r = R + extra
+            NSColor.colorWithCalibratedRed_green_blue_alpha_(
+                rgb[0], rgb[1], rgb[2], alpha).set()
+            NSBezierPath.bezierPathWithOvalInRect_(
+                NSMakeRect(cx - r, CY - r, 2 * r, 2 * r)).fill()
+
+    def _draw_wix(self):
+        # Only an actual logo asset is drawn — no placeholder glyph. Without
+        # wix_white.png the green lamp is just a clean glowing dot like the rest.
+        if self.wix is None:
+            return
+        side = 2 * R - 2
+        self.wix.drawInRect_fromRect_operation_fraction_(
+            NSMakeRect(GREEN_CX - side / 2, CY - side / 2, side, side),
+            NSMakeRect(0, 0, 0, 0), 2, 1.0)             # 2 = NSCompositeSourceOver
+
+    def redraw(self):
+        self.item.button().setImage_(self.make_image())
+
+    # ---- loops (selectors) ----
+    def poll_(self, timer):
+        # state.json -> lamp colour
+        try:
+            m = os.path.getmtime(STATE_FILE)
+        except OSError:
+            return
+        if m != self.mtime:
+            self.mtime = m
+            new = read_json(STATE_FILE, {}).get("state", "idle")
+            if new != self.state:
+                self.state = new
+                self.blink_on = True
+                if self.enabled:
+                    self.redraw()
+
+    def blink_(self, timer):
+        if self.enabled and STATE_MAP.get(self.state, {}).get("blink"):
+            self.blink_on = not self.blink_on
+            self.redraw()
+        else:
+            self.blink_on = True
+
+    # ---- menu actions ----
+    def toggleEnabled_(self, sender):
+        self.enabled = not self.enabled
+        self.blink_on = True
+        self.toggle_item.setState_(1 if self.enabled else 0)
+        try:
+            with open(CONFIG_FILE, "w") as f:
+                json.dump({"enabled": self.enabled}, f)
+        except Exception:
+            pass
+        self.redraw()
+
+    def quit_(self, sender):
+        # Release the single-instance lock immediately, so an instant relaunch
+        # doesn't race a slow NSApplication termination and exit on the lock.
+        global _lock_keep
+        try:
+            if _lock_keep is not None:
+                fcntl.flock(_lock_keep, fcntl.LOCK_UN)
+                _lock_keep.close()
+                _lock_keep = None
+        except Exception:
+            pass
+        try:
+            os.remove(PID_FILE)
+        except OSError:
+            pass
+        NSApplication.sharedApplication().terminate_(None)
+
+
+def _dlog(msg):
+    try:
+        with open(os.path.join(RUNTIME_DIR, "app.log"), "a") as f:
+            f.write(f"[greenlight] {msg}\n")
+    except Exception:
+        pass
+
+
+_lock_keep = None  # keep the lock fd alive for the process lifetime
+
+
+def main():
+    _dlog(f"=== start pid={os.getpid()} runtime={RUNTIME_DIR}")
+    os.makedirs(RUNTIME_DIR, exist_ok=True)
+    lock = open(LOCK_FILE, "w")
+    # Single instance. On a quick Quit+relaunch the dying instance may still hold
+    # the lock for a moment, so wait briefly for it to release before giving up.
+    acquired = False
+    for _ in range(25):                       # ~2.5s grace
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquired = True
+            break
+        except OSError:
+            time.sleep(0.1)
+    if not acquired:
+        # Another instance is already running — don't start a second one.
+        _dlog("another instance already running -> exiting")
+        sys.exit(0)
+    _dlog("lock acquired")
+    with open(PID_FILE, "w") as f:
+        f.write(str(os.getpid()))
+    global _lock_keep
+    _lock_keep = lock  # don't let the lock fd get garbage-collected
+
+    app = NSApplication.sharedApplication()
+    app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+    controller = GreenlightApp.alloc().init()
+    app.setDelegate_(controller)
+    try:
+        controller.build()              # MUST be before app.run() or the item is invisible
+        _dlog("build ok")
+    except Exception:
+        _dlog("build FAILED:\n" + traceback.format_exc())
+    global _keepalive
+    _keepalive = controller
+    _dlog("entering run loop")
+    app.run()
+
+
+if __name__ == "__main__":
+    main()
