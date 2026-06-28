@@ -169,8 +169,14 @@ def _rule_allows(rule: str, tool: str, tool_input: dict) -> bool:
         if pat.endswith("*"):
             return cmd.startswith(pat[:-1])
         return cmd == pat
-    if rule.endswith("*") and tool.startswith(rule[:-1]):   # generic wildcard
-        return True
+    # Trailing-* glob: Claude Code honors it ONLY when anchored after a
+    # glob-free `mcp__<server>__` prefix (e.g. mcp__srv__tool*). Unanchored
+    # globs (mcp__*, B*, *) are skipped by Claude Code, so we must not match
+    # them either — else the light stays solid on a real prompt.
+    if rule.endswith("*") and rule.startswith("mcp__"):
+        prefix = rule[:-1]                            # strip trailing *
+        if "__" in prefix[len("mcp__"):]:             # server__ present & glob-free
+            return tool.startswith(prefix)
     return False
 
 
