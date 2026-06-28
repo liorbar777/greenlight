@@ -7,7 +7,10 @@ Code's state, read from a small JSON file the hook writes:
 
     idle     -> all lamps dim
     working  -> solid amber  (Claude is working)
-    waiting  -> blinking red (Claude is waiting on you)
+    pending  -> solid amber, then blinking red once it has lingered ESCALATE_DELAY
+               seconds with no result (a tool likely sitting on an approve/deny
+               prompt). A fast auto-approved call clears before then -> stays amber.
+    waiting  -> blinking red (Claude is waiting on you — a known block)
     go       -> green        (finished; Wix mark shown)
 
 It's a pure status light: no error/verdict path — a finished turn is always green.
@@ -66,10 +69,17 @@ OFF_LAMP = (0.60, 0.60, 0.63)   # inactive lamp = light gray (only the lit one i
 STATE_MAP = {
     "idle":    {"bulb": None,    "blink": False},
     "working": {"bulb": "amber", "blink": False},
+    "pending": {"bulb": "amber", "blink": False},   # escalates to red blink — see _effective
     "waiting": {"bulb": "red",   "blink": True},
     "go":      {"bulb": "green", "blink": False},
 }
 ORDER = ["red", "amber", "green"]
+
+# A "pending" tool (might prompt) stays solid amber this long; if still pending
+# after it, the app escalates to a red blink — it's almost certainly waiting on an
+# approve/deny dialog. Long enough that fast auto-approved calls (incl. session-
+# granted MCP) finish first and never blink. Overridable via config.json.
+ESCALATE_DELAY = 2.5
 
 
 def read_json(path, default):
@@ -92,6 +102,9 @@ class GreenlightApp(NSObject):
         self.state = "idle"
         cfg = read_json(CONFIG_FILE, {})
         self.enabled = bool(cfg.get("enabled", True))
+        self.escalate_delay = float(cfg.get("escalate_delay", ESCALATE_DELAY))
+        self.pending_since = 0          # ts a "pending" tool started; 0 = none
+        self._was_escalated = False     # last-rendered escalation state (time-driven)
         self.blink_on = True
         self.mtime = 0
         self.wix = None
@@ -142,13 +155,12 @@ class GreenlightApp(NSObject):
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.setCurrentContext_(ctx)
 
-        cfg = STATE_MAP.get(self.state, STATE_MAP["idle"])
-        active = cfg["bulb"]
+        active, blink = self._effective()
         for i, name in enumerate(ORDER):
             if not self.enabled:
                 rgb, lit = DISABLED, False
             else:
-                lit = (name == active) and (self.blink_on or not cfg["blink"])
+                lit = (name == active) and (self.blink_on or not blink)
                 rgb = BULB_ON[name] if lit else OFF_LAMP
             if lit:
                 self._draw_glow(CX[i], rgb)        # soft halo behind the lit lamp
@@ -188,24 +200,50 @@ class GreenlightApp(NSObject):
     def redraw(self):
         self.item.button().setImage_(self.make_image())
 
+    # ---- state -> visuals ----
+    def _escalated(self):
+        # A "pending" tool that has lingered past the delay is almost certainly
+        # waiting on an approve/deny prompt -> show it as a red blink.
+        return (self.state == "pending" and self.pending_since
+                and (time.time() - self.pending_since) >= self.escalate_delay)
+
+    def _effective(self):
+        # Resolve the state to (lit-lamp-name, should-blink), applying escalation.
+        if self.state == "pending":
+            return ("red", True) if self._escalated() else ("amber", False)
+        cfg = STATE_MAP.get(self.state, STATE_MAP["idle"])
+        return cfg["bulb"], cfg["blink"]
+
     # ---- loops (selectors) ----
     def poll_(self, timer):
-        # state.json -> lamp colour
+        # state.json -> lamp colour. Read on every file change...
         try:
             m = os.path.getmtime(STATE_FILE)
         except OSError:
-            return
-        if m != self.mtime:
+            m = None
+        if m is not None and m != self.mtime:
             self.mtime = m
-            new = read_json(STATE_FILE, {}).get("state", "idle")
-            if new != self.state:
+            data = read_json(STATE_FILE, {})
+            new = data.get("state", "idle")
+            new_ps = data.get("pending_since", 0)
+            if new != self.state or new_ps != self.pending_since:
                 self.state = new
+                self.pending_since = new_ps
                 self.blink_on = True
+                self._was_escalated = self._escalated()
                 if self.enabled:
                     self.redraw()
+        # ...and also redraw when a pending crosses the escalation threshold with
+        # no file change (the transition is purely time-driven).
+        esc = self._escalated()
+        if esc != self._was_escalated:
+            self._was_escalated = esc
+            self.blink_on = True
+            if self.enabled:
+                self.redraw()
 
     def blink_(self, timer):
-        if self.enabled and STATE_MAP.get(self.state, {}).get("blink"):
+        if self.enabled and self._effective()[1]:
             self.blink_on = not self.blink_on
             self.redraw()
         else:
