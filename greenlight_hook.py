@@ -166,12 +166,14 @@ def main() -> None:
         hook_input = {}
 
     # React to Claude Code ONLY. Other agents (e.g. Cursor's built-in chat) also
-    # run ~/.claude hooks, but their payload either omits transcript_path or roots
-    # it under ~/.cursor/ instead of ~/.claude/. Allowlist, don't blocklist: only
-    # proceed when we can positively confirm a Claude Code transcript. An empty or
-    # foreign transcript_path means it isn't us -> stay out.
+    # run ~/.claude hooks. Identify Claude Code positively via the CLAUDECODE=1 env
+    # var it always sets (Cursor does not); fall back to a /.claude/ transcript_path
+    # when the env is absent. Gating on transcript_path alone is brittle: Claude
+    # Code sometimes sends an empty/missing path, which would silently no-op the
+    # light, while Cursor may omit it too -> can't distinguish on path alone.
     tp = hook_input.get("transcript_path") or ""
-    if "/.claude/" not in tp:
+    is_claude_code = os.environ.get("CLAUDECODE") == "1" or "/.claude/" in tp
+    if not is_claude_code:
         sys.exit(0)
 
     if intent == "stop":
