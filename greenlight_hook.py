@@ -194,11 +194,19 @@ def main() -> None:
         # Blink ONLY when the user is about to be asked to act. Order matters:
         #   1. tools that ALWAYS prompt (AskUserQuestion / ExitPlanMode) -> blink,
         #      even in plan mode (ExitPlanMode IS the plan-approval wait).
-        #   2. plan mode -> reads are auto-approved and edits are BLOCKED (never
+        #   2. bypassPermissions -> nothing ever prompts -> stay solid.
+        #   3. plan mode -> reads are auto-approved and edits are BLOCKED (never
         #      prompted), so nothing else here will prompt -> stay solid.
-        #   3. known read-only tools -> auto-approved, no prompt -> stay solid
+        #   4. ANY mcp__ tool -> blink. The user wants every MCP permission request
+        #      to show red, and the static allow-list can't tell us whether a given
+        #      MCP call will actually prompt: a listed tool still prompts when its
+        #      server is disconnected or the grant is session-scoped. So we blink
+        #      for all MCP calls. Auto-approved ones only flash briefly (PostToolUse
+        #      flips back to solid the moment the tool runs); a real approve/deny
+        #      prompt keeps blinking until you answer.
+        #   5. known read-only tools -> auto-approved, no prompt -> stay solid
         #      (kills the ~1s red flash on routine Read/Grep/etc.).
-        #   4. otherwise fall back to the allow-rule heuristic.
+        #   6. otherwise fall back to the allow-rule heuristic.
         # The live permission mode comes from the hook payload (`permission_mode`);
         # the static defaultMode in settings.json does NOT reflect the plan toggle.
         # PostToolUse flips back to solid amber once the tool actually runs.
@@ -206,8 +214,12 @@ def main() -> None:
         pmode = hook_input.get("permission_mode") or ""
         if tool in ALWAYS_PROMPTS:
             state = "waiting"
+        elif pmode in BLANKET_APPROVE_MODES:
+            state = "working"
         elif pmode == "plan":
             state = "working"
+        elif tool.startswith("mcp__"):
+            state = "waiting"
         elif tool in SAFE_READONLY_TOOLS:
             state = "working"
         elif tool_will_prompt(
