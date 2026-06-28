@@ -42,6 +42,11 @@ EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 SAFE_READONLY_TOOLS = {
     "Read", "Glob", "Grep", "LS", "NotebookRead",
     "TodoWrite", "WebFetch", "WebSearch", "Task",
+    # ToolSearch is an auto-approved built-in that can block for SECONDS waiting
+    # on connecting MCP servers. Left out, it (a) spuriously blinked at pretool
+    # and (b) its slow PostToolUse "working" overwrote a real prompt's red blink
+    # with solid amber once MIN_WAIT_HOLD expired -> "static orange on a question".
+    "ToolSearch",
 }
 
 # Minimum time (seconds) a red "waiting" blink is protected from being downgraded
@@ -217,16 +222,17 @@ def main() -> None:
         #   2. bypassPermissions -> nothing ever prompts -> stay solid.
         #   3. plan mode -> reads are auto-approved and edits are BLOCKED (never
         #      prompted), so nothing else here will prompt -> stay solid.
-        #   4. ANY mcp__ tool -> blink. The user wants every MCP permission request
-        #      to show red, and the static allow-list can't tell us whether a given
-        #      MCP call will actually prompt: a listed tool still prompts when its
-        #      server is disconnected or the grant is session-scoped. So we blink
-        #      for all MCP calls. Auto-approved ones only flash briefly (PostToolUse
-        #      flips back to solid the moment the tool runs); a real approve/deny
-        #      prompt keeps blinking until you answer.
-        #   5. known read-only tools -> auto-approved, no prompt -> stay solid
-        #      (kills the ~1s red flash on routine Read/Grep/etc.).
-        #   6. otherwise fall back to the allow-rule heuristic.
+        #   4. ANY mcp__ tool -> stay SOLID. An MCP-heavy turn fires dozens of MCP
+        #      calls, virtually all auto-approved via connected-server / session
+        #      grants the hook can't see (they're not written to settings.json).
+        #      Blinking on every MCP call (the old behavior) turned normal work
+        #      into a red strobe. Per the design — calm-solid while working, blink
+        #      only on a genuine block — we keep MCP solid. Trade-off: a rare MCP
+        #      call that truly prompts won't blink; a missed blink beats a strobe.
+        #   5. known read-only / auto-approved built-ins -> no prompt -> stay solid
+        #      (kills the ~1s flash on routine Read/Grep/ToolSearch/etc.).
+        #   6. otherwise fall back to the allow-rule heuristic (real Bash/edit
+        #      approve-deny prompts still blink red).
         # The live permission mode comes from the hook payload (`permission_mode`);
         # the static defaultMode in settings.json does NOT reflect the plan toggle.
         # PostToolUse flips back to solid amber once the tool actually runs.
@@ -239,7 +245,7 @@ def main() -> None:
         elif pmode == "plan":
             state = "working"
         elif tool.startswith("mcp__"):
-            state = "waiting"
+            state = "working"
         elif tool in SAFE_READONLY_TOOLS:
             state = "working"
         elif tool_will_prompt(
